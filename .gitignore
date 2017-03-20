@@ -122,3 +122,5 @@ lextab.py
 
 # tup database
 /.tup
+
+.vscode

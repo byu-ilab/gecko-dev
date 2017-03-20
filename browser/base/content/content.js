@@ -15,6 +15,7 @@ Cu.import("resource:///modules/ContentObservers.jsm");
 Cu.import("resource://gre/modules/InlineSpellChecker.jsm");
 Cu.import("resource://gre/modules/InlineSpellCheckerContent.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
+let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
 
 XPCOMUtils.defineLazyModuleGetter(this, "E10SUtils",
   "resource:///modules/E10SUtils.jsm");
@@ -82,7 +83,36 @@ addEventListener("DOMAutoComplete", function(event) {
 addEventListener("blur", function(event) {
   LoginManagerContent.onUsernameInput(event);
 });
+WebRequest.onHeadersReceived.addListener(function(event) {
+  let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
+  if(nonce.length > 0) {
+    
+    console.log(event)
+    WebRequest.onBeforeSendHeaders.addListener(function headerListener(e) {
+      console.log(e);
+      e.requestHeaders.push({name:'publicKey', value:'iuower234'});
+      WebRequest.onBeforeSendHeaders.removeListener(headerListener);
+      return({requestHeaders: e.requestHeaders});
+    },{windowId: event.windowId}
+    ,["blocking", "requestHeaders"])
+    
+    return {redirectUrl: event.url};
+  }
+  
+},
+{types: ["main_frame"]},
+["responseHeaders", "blocking"])
 
+// WebRequest.onBeforeRedirect.addListener(function(e) {
+//   let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
+//   if(nonce.length > 0){
+//     console.log("redirect",e);
+//     event.responseHeaders.push({name: "publicKey", value:'3248uasf'})
+//     return({req})
+//   }
+  
+// },{types:['main_frame']}
+// , ["responseHeaders"])
 var handleContentContextMenu = function(event) {
   let defaultPrevented = event.defaultPrevented;
   if (!Services.prefs.getBoolPref("dom.event.contextmenu.enabled")) {
