@@ -7,7 +7,7 @@
  * depend on the frame being contained in tabbrowser. */
 
 var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
-
+// console.log(Components);
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource:///modules/ContentWebRTC.jsm");
@@ -15,7 +15,6 @@ Cu.import("resource:///modules/ContentObservers.jsm");
 Cu.import("resource://gre/modules/InlineSpellChecker.jsm");
 Cu.import("resource://gre/modules/InlineSpellCheckerContent.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
-let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
 
 XPCOMUtils.defineLazyModuleGetter(this, "E10SUtils",
   "resource:///modules/E10SUtils.jsm");
@@ -46,7 +45,16 @@ XPCOMUtils.defineLazyGetter(this, "PageMenuChild", function() {
 });
 XPCOMUtils.defineLazyModuleGetter(this, "Feeds",
   "resource:///modules/Feeds.jsm");
-
+XPCOMUtils.defineLazyGetter(this, "WebRequest", function() {
+  let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
+  return WebRequest
+});
+// XPCOMUtils.defineLazyModuleGetter(this, "WebRequest", "resource://gre/modules/WebRequest.jsm")
+// console.log("Components",Components)
+// console.log("XPCOM", XPCOMUtils)
+// console.log("services",Services)
+// Cu.import ("resource://gre/modules/WebRequest.jsm", {})
+// let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
 Cu.importGlobalProperties(["URL"]);
 
 // TabChildGlobal
@@ -65,10 +73,11 @@ addMessageListener("RemoteLogins:fillForm", function(message) {
   LoginManagerContent.receiveMessage(message, content);
 });
 addEventListener("DOMFormHasPassword", function(event) {
+  debugger;
   LoginManagerContent.onDOMFormHasPassword(event, content);
   let formLike = LoginFormFactory.createFromForm(event.target);
   InsecurePasswordUtils.reportInsecurePasswords(formLike);
-});
+}.bind(this));
 addEventListener("DOMInputPasswordAdded", function(event) {
   LoginManagerContent.onDOMInputPasswordAdded(event, content);
   let formLike = LoginFormFactory.createFromField(event.target);
@@ -86,17 +95,7 @@ addEventListener("blur", function(event) {
 WebRequest.onHeadersReceived.addListener(function(event) {
   let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
   if(nonce.length > 0) {
-    
-    console.log(event)
-    WebRequest.onBeforeSendHeaders.addListener(function headerListener(e) {
-      console.log(e);
-      e.requestHeaders.push({name:'publicKey', value:'iuower234'});
-      WebRequest.onBeforeSendHeaders.removeListener(headerListener);
-      return({requestHeaders: e.requestHeaders});
-    },{windowId: event.windowId}
-    ,["blocking", "requestHeaders"])
-    
-    return {redirectUrl: event.url};
+    return LoginManagerContent.onHeaderHasNonce(event, nonce[0].value)
   }
   
 },
