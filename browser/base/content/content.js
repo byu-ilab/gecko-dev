@@ -7,7 +7,7 @@
  * depend on the frame being contained in tabbrowser. */
 
 var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
-
+// console.log(Components);
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource:///modules/ContentWebRTC.jsm");
@@ -45,7 +45,16 @@ XPCOMUtils.defineLazyGetter(this, "PageMenuChild", function() {
 });
 XPCOMUtils.defineLazyModuleGetter(this, "Feeds",
   "resource:///modules/Feeds.jsm");
-
+XPCOMUtils.defineLazyGetter(this, "WebRequest", function() {
+  let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
+  return WebRequest
+});
+// XPCOMUtils.defineLazyModuleGetter(this, "WebRequest", "resource://gre/modules/WebRequest.jsm")
+// console.log("Components",Components)
+// console.log("XPCOM", XPCOMUtils)
+// console.log("services",Services)
+// Cu.import ("resource://gre/modules/WebRequest.jsm", {})
+// let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
 Cu.importGlobalProperties(["URL"]);
 
 // TabChildGlobal
@@ -64,10 +73,11 @@ addMessageListener("RemoteLogins:fillForm", function(message) {
   LoginManagerContent.receiveMessage(message, content);
 });
 addEventListener("DOMFormHasPassword", function(event) {
+  debugger;
   LoginManagerContent.onDOMFormHasPassword(event, content);
   let formLike = LoginFormFactory.createFromForm(event.target);
   InsecurePasswordUtils.reportInsecurePasswords(formLike);
-});
+}.bind(this));
 addEventListener("DOMInputPasswordAdded", function(event) {
   LoginManagerContent.onDOMInputPasswordAdded(event, content);
   let formLike = LoginFormFactory.createFromField(event.target);
@@ -82,7 +92,26 @@ addEventListener("DOMAutoComplete", function(event) {
 addEventListener("blur", function(event) {
   LoginManagerContent.onUsernameInput(event);
 });
+WebRequest.onHeadersReceived.addListener(function(event) {
+  let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
+  if(nonce.length > 0) {
+    return LoginManagerContent.onHeaderHasNonce(event, nonce[0].value)
+  }
+  
+},
+{types: ["main_frame"]},
+["responseHeaders", "blocking"])
 
+// WebRequest.onBeforeRedirect.addListener(function(e) {
+//   let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
+//   if(nonce.length > 0){
+//     console.log("redirect",e);
+//     event.responseHeaders.push({name: "publicKey", value:'3248uasf'})
+//     return({req})
+//   }
+  
+// },{types:['main_frame']}
+// , ["responseHeaders"])
 var handleContentContextMenu = function(event) {
   let defaultPrevented = event.defaultPrevented;
   if (!Services.prefs.getBoolPref("dom.event.contextmenu.enabled")) {
