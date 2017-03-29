@@ -13,7 +13,7 @@
 #include "mozilla/AutoRestore.h"
 #include "mozilla/AsyncEventDispatcher.h" // For AsyncEventDispatcher
 #include "mozilla/Maybe.h" // For Maybe
-#include "mozilla/AnimationRule.h" // For AnimationRule
+#include "mozilla/TypeTraits.h" // For Forward<>
 #include "nsAnimationManager.h" // For CSSAnimation
 #include "nsDOMMutationObserver.h" // For nsAutoAnimationMutationBatch
 #include "nsIDocument.h" // For nsIDocument
@@ -416,7 +416,9 @@ Animation::GetReady(ErrorResult& aRv)
   }
   if (!mReady) {
     aRv.Throw(NS_ERROR_FAILURE);
-  } else if (PlayState() != AnimationPlayState::Pending) {
+    return nullptr;
+  }
+  if (PlayState() != AnimationPlayState::Pending) {
     mReady->MaybeResolve(this);
   }
   return mReady;
@@ -431,7 +433,9 @@ Animation::GetFinished(ErrorResult& aRv)
   }
   if (!mFinished) {
     aRv.Throw(NS_ERROR_FAILURE);
-  } else if (mFinishedIsResolved) {
+    return nullptr;
+  }
+  if (mFinishedIsResolved) {
     MaybeResolveFinishedPromise();
   }
   return mFinished;
@@ -787,12 +791,21 @@ Animation::CancelNoUpdate()
   mHoldTime.SetNull();
   mStartTime.SetNull();
 
-  UpdateTiming(SeekFlag::NoSeek, SyncNotifyFlag::Async);
-
   if (mTimeline) {
     mTimeline->RemoveAnimation(this);
   }
   MaybeQueueCancelEvent(activeTime);
+
+  // When an animation is cancelled it no longer needs further ticks from the
+  // timeline. However, if we queued a cancel event and this was the last
+  // animation attached to the timeline, the timeline will stop observing the
+  // refresh driver and there may be no subsequent refresh driver tick for
+  // dispatching the queued event.
+  //
+  // By calling UpdateTiming *after* removing ourselves from our timeline, we
+  // ensure the timeline will register with the refresh driver for at least one
+  // more tick.
+  UpdateTiming(SeekFlag::NoSeek, SyncNotifyFlag::Async);
 }
 
 bool
@@ -917,7 +930,21 @@ Animation::HasLowerCompositeOrderThan(const Animation& aOther) const
 }
 
 void
-Animation::ComposeStyle(AnimationRule& aStyleRule,
+Animation::WillComposeStyle()
+{
+  mFinishedAtLastComposeStyle = (PlayState() == AnimationPlayState::Finished);
+
+  MOZ_ASSERT(mEffect);
+
+  KeyframeEffectReadOnly* keyframeEffect = mEffect->AsKeyframeEffect();
+  if (keyframeEffect) {
+    keyframeEffect->WillComposeStyle();
+  }
+}
+
+template<typename ComposeAnimationResult>
+void
+Animation::ComposeStyle(ComposeAnimationResult&& aComposeResult,
                         const nsCSSPropertyIDSet& aPropertiesToSkip)
 {
   if (!mEffect) {
@@ -979,13 +1006,13 @@ Animation::ComposeStyle(AnimationRule& aStyleRule,
 
     KeyframeEffectReadOnly* keyframeEffect = mEffect->AsKeyframeEffect();
     if (keyframeEffect) {
-      keyframeEffect->ComposeStyle(aStyleRule, aPropertiesToSkip);
+      keyframeEffect->ComposeStyle(Forward<ComposeAnimationResult>(aComposeResult),
+                                   aPropertiesToSkip);
     }
   }
 
   MOZ_ASSERT(playState == PlayState(),
              "Play state should not change during the course of compositing");
-  mFinishedAtLastComposeStyle = (playState == AnimationPlayState::Finished);
 }
 
 void
@@ -1293,22 +1320,7 @@ Animation::PostUpdate()
   if (!keyframeEffect) {
     return;
   }
-
-  Maybe<NonOwningAnimationTarget> target = keyframeEffect->GetTarget();
-  if (!target) {
-    return;
-  }
-
-  nsPresContext* presContext = keyframeEffect->GetPresContext();
-  if (!presContext) {
-    return;
-  }
-
-  presContext->EffectCompositor()
-             ->RequestRestyle(target->mElement,
-                              target->mPseudoType,
-                              EffectCompositor::RestyleType::Layer,
-                              CascadeLevel());
+  keyframeEffect->RequestRestyle(EffectCompositor::RestyleType::Layer);
 }
 
 void
@@ -1495,6 +1507,18 @@ Animation::IsRunningOnCompositor() const
          mEffect->AsKeyframeEffect() &&
          mEffect->AsKeyframeEffect()->IsRunningOnCompositor();
 }
+
+template
+void
+Animation::ComposeStyle<RefPtr<AnimValuesStyleRule>&>(
+  RefPtr<AnimValuesStyleRule>& aAnimationRule,
+  const nsCSSPropertyIDSet& aPropertiesToSkip);
+
+template
+void
+Animation::ComposeStyle<const RawServoAnimationValueMap&>(
+  const RawServoAnimationValueMap& aAnimationValues,
+  const nsCSSPropertyIDSet& aPropertiesToSkip);
 
 } // namespace dom
 } // namespace mozilla

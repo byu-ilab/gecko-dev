@@ -36,6 +36,7 @@
 #include "mozilla/layers/MetricsSharingController.h"
 #include "mozilla/layers/PCompositorBridgeParent.h"
 #include "mozilla/layers/APZTestData.h"
+#include "mozilla/webrender/WebRenderTypes.h"
 #include "mozilla/widget/CompositorWidget.h"
 #include "nsISupportsImpl.h"
 #include "ThreadSafeRefcountingWithMainThreadDestruction.h"
@@ -63,6 +64,7 @@ class APZCTreeManager;
 class APZCTreeManagerParent;
 class AsyncCompositionManager;
 class Compositor;
+class CompositorAnimationStorage;
 class CompositorBridgeParent;
 class CompositorVsyncScheduler;
 class HostLayerManager;
@@ -71,6 +73,7 @@ class PAPZParent;
 class CrossProcessCompositorBridgeParent;
 class CompositorThreadHolder;
 class InProcessCompositorSession;
+class WebRenderBridgeParent;
 
 struct ScopedLayerTreeRegistration
 {
@@ -103,6 +106,7 @@ public:
                                  const TimeStamp& aTime) { return true; }
   virtual void LeaveTestMode(LayerTransactionParent* aLayerTree) { }
   virtual void ApplyAsyncProperties(LayerTransactionParent* aLayerTree) = 0;
+  virtual CompositorAnimationStorage* GetAnimationStorage(const uint64_t& aId) { return nullptr; }
   virtual void FlushApzRepaints(const LayerTransactionParent* aLayerTree) = 0;
   virtual void GetAPZTestData(const LayerTransactionParent* aLayerTree,
                               APZTestData* aOutData) { }
@@ -114,6 +118,10 @@ public:
   virtual ShmemAllocator* AsShmemAllocator() override { return this; }
 
   virtual mozilla::ipc::IPCResult RecvSyncWithCompositor() override { return IPC_OK(); }
+
+  virtual void ObserveLayerUpdate(uint64_t aLayersId, uint64_t aEpoch, bool aActive) = 0;
+
+  virtual void NotifyDidCompositeToPipeline(const wr::PipelineId& aPipelineId, const wr::Epoch& aEpoch, TimeStamp& aCompositeStart, TimeStamp& aCompositeEnd) {}
 
   // HostIPCAllocator
   virtual base::ProcessId GetChildProcessId() override;
@@ -221,6 +229,7 @@ public:
   virtual void LeaveTestMode(LayerTransactionParent* aLayerTree) override;
   virtual void ApplyAsyncProperties(LayerTransactionParent* aLayerTree)
                override;
+  virtual CompositorAnimationStorage* GetAnimationStorage(const uint64_t& aId) override;
   virtual void FlushApzRepaints(const LayerTransactionParent* aLayerTree) override;
   virtual void GetAPZTestData(const LayerTransactionParent* aLayerTree,
                               APZTestData* aOutData) override;
@@ -241,6 +250,8 @@ public:
 
   PCompositorWidgetParent* AllocPCompositorWidgetParent(const CompositorWidgetInitData& aInitData) override;
   bool DeallocPCompositorWidgetParent(PCompositorWidgetParent* aActor) override;
+
+  void ObserveLayerUpdate(uint64_t aLayersId, uint64_t aEpoch, bool aActive) override { }
 
   /**
    * Request that the compositor be recreated due to a shared device reset.
@@ -346,6 +357,7 @@ public:
     APZCTreeManagerParent* mApzcTreeManagerParent;
     RefPtr<CompositorBridgeParent> mParent;
     HostLayerManager* mLayerManager;
+    RefPtr<WebRenderBridgeParent> mWrBridge;
     // Pointer to the CrossProcessCompositorBridgeParent. Used by APZCs to share
     // their FrameMetrics with the corresponding child process that holds
     // the PCompositorBridgeChild
@@ -442,6 +454,13 @@ public:
     return mOptions;
   }
 
+  PWebRenderBridgeParent* AllocPWebRenderBridgeParent(const wr::PipelineId& aPipelineId,
+                                                      const LayoutDeviceIntSize& aSize,
+                                                      TextureFactoryIdentifier* aTextureFactoryIdentifier,
+                                                      uint32_t* aIdNamespace) override;
+  bool DeallocPWebRenderBridgeParent(PWebRenderBridgeParent* aActor) override;
+  static void SetWebRenderProfilerEnabled(bool aEnabled);
+
   static CompositorBridgeParent* GetCompositorBridgeParentFromLayersId(const uint64_t& aLayersId);
 private:
 
@@ -536,6 +555,10 @@ protected:
 
   void DidComposite(TimeStamp& aCompositeStart, TimeStamp& aCompositeEnd);
 
+  virtual void NotifyDidCompositeToPipeline(const wr::PipelineId& aPipelineId, const wr::Epoch& aEpoch, TimeStamp& aCompositeStart, TimeStamp& aCompositeEnd) override;
+
+  void NotifyDidComposite(uint64_t aTransactionId, TimeStamp& aCompositeStart, TimeStamp& aCompositeEnd);
+
   // The indirect layer tree lock must be held before calling this function.
   // Callback should take (LayerTreeState* aState, const uint64_t& aLayersId)
   template <typename Lambda>
@@ -544,6 +567,7 @@ protected:
   RefPtr<HostLayerManager> mLayerManager;
   RefPtr<Compositor> mCompositor;
   RefPtr<AsyncCompositionManager> mCompositionManager;
+  RefPtr<WebRenderBridgeParent> mWrBridge;
   widget::CompositorWidget* mWidget;
   TimeStamp mTestTime;
   CSSToLayoutDeviceScale mScale;
@@ -577,6 +601,7 @@ protected:
   // confirmation that the channel is closed.
   // mSelfRef is cleared in DeferredDestroy which is scheduled by ActorDestroy.
   RefPtr<CompositorBridgeParent> mSelfRef;
+  RefPtr<CompositorAnimationStorage> mAnimationStorage;
 
   TimeDuration mPaintTime;
 

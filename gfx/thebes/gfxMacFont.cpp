@@ -16,6 +16,7 @@
 #include "gfxMacPlatformFontList.h"
 #include "gfxFontConstants.h"
 #include "gfxTextRun.h"
+#include "nsCocoaFeatures.h"
 
 #include "cairo-quartz.h"
 
@@ -60,6 +61,12 @@ static CFDictionaryRef
 CreateVariationDictionaryOrNull(CGFontRef aCGFont,
                                 const nsTArray<gfxFontVariation>& aVariations)
 {
+    // Avoid calling potentially buggy variation APIs on pre-Sierra macOS
+    // versions (see bug 1331683)
+    if (!nsCocoaFeatures::OnSierraOrLater()) {
+        return nullptr;
+    }
+
     AutoRelease<CTFontRef>
       ctFont(CTFontCreateWithGraphicsFont(aCGFont, 0, nullptr, nullptr));
     AutoRelease<CFArrayRef> axes(CTFontCopyVariationAxes(ctFont));
@@ -531,6 +538,12 @@ gfxMacFont::CreateCTFontFromCGFontWithVariations(CGFontRef aCGFont,
                                                  CGFloat aSize,
                                                  CTFontDescriptorRef aFontDesc)
 {
+    // Avoid calling potentially buggy variation APIs on pre-Sierra macOS
+    // versions (see bug 1331683)
+    if (!nsCocoaFeatures::OnSierraOrLater()) {
+        return CTFontCreateWithGraphicsFont(aCGFont, aSize, nullptr, aFontDesc);
+    }
+
     CFDictionaryRef variations = ::CGFontCopyVariations(aCGFont);
     CTFontRef ctFont;
     if (variations) {
@@ -550,7 +563,8 @@ gfxMacFont::CreateCTFontFromCGFontWithVariations(CGFontRef aCGFont,
         ctFont = ::CTFontCreateWithGraphicsFont(aCGFont, aSize, nullptr, varDesc);
         ::CFRelease(varDesc);
     } else {
-        ctFont = ::CTFontCreateWithGraphicsFont(aCGFont, aSize, nullptr, nullptr);
+        ctFont = ::CTFontCreateWithGraphicsFont(aCGFont, aSize, nullptr,
+                                                aFontDesc);
     }
     return ctFont;
 }

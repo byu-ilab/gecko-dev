@@ -503,6 +503,9 @@ public:
   // aWindow can be either outer or inner window.
   static bool CanCallerAccess(nsPIDOMWindowInner* aWindow);
 
+  // Check if the principal is chrome or an addon with the permission.
+  static bool PrincipalHasPermission(nsIPrincipal* aPrincipal, const nsAString& aPerm);
+
   // Check if the JS caller is chrome or an addon with the permission.
   static bool CallerHasPermission(JSContext* aCx, const nsAString& aPerm);
 
@@ -544,6 +547,10 @@ public:
   {
     return sSecurityManager;
   }
+
+  // Returns the subject principal from the JSContext. May only be called
+  // from the main thread and assumes an existing compartment.
+  static nsIPrincipal* SubjectPrincipal(JSContext* aCx);
 
   // Returns the subject principal. Guaranteed to return non-null. May only
   // be called when nsContentUtils is initialized.
@@ -789,11 +796,13 @@ public:
   static bool IsDraggableLink(const nsIContent* aContent);
 
   /**
-   * Convenience method to create a new nodeinfo that differs only by name
-   * from aNodeInfo.
+   * Convenience method to create a new nodeinfo that differs only by prefix and
+   * name from aNodeInfo. The new nodeinfo's name is set to aName, and prefix is
+   * set to null.
    */
-  static nsresult NameChanged(mozilla::dom::NodeInfo* aNodeInfo, nsIAtom* aName,
-                              mozilla::dom::NodeInfo** aResult);
+  static nsresult QNameChanged(mozilla::dom::NodeInfo* aNodeInfo,
+                               nsIAtom* aName,
+                               mozilla::dom::NodeInfo** aResult);
 
   /**
    * Returns the appropriate event argument names for the specified
@@ -816,6 +825,16 @@ public:
    **/
   static mozilla::OriginAttributes
   GetOriginAttributes(nsILoadGroup* aLoadGroup);
+
+  /**
+   * Returns true if this document is in a Private Browsing window.
+   */
+  static bool IsInPrivateBrowsing(nsIDocument* aDoc);
+
+  /**
+   * Returns true if this loadGroup uses Private Browsing.
+   */
+  static bool IsInPrivateBrowsing(nsILoadGroup* aLoadGroup);
 
   /**
    * If aNode is not an element, return true exactly when aContent's binding
@@ -883,6 +902,37 @@ public:
                                               uint32_t aColumnNumber = 0,
                                               MissingErrorLocationMode aLocationMode
                                                 = eUSE_CALLING_LOCATION);
+
+  /**
+   * Report a non-localized error message to the error console base on the
+   * innerWindowID.
+   *   @param aErrorText the error message
+   *   @param aErrorFlags See nsIScriptError.
+   *   @param aCategory Name of module reporting error.
+   *   @param [aInnerWindowID] Inner window ID for document which triggered the
+   *          message.
+   *   @param [aURI=nullptr] (Optional) URI of resource containing error.
+   *   @param [aSourceLine=EmptyString()] (Optional) The text of the line that
+              contains the error (may be empty).
+   *   @param [aLineNumber=0] (Optional) Line number within resource
+              containing error.
+   *   @param [aColumnNumber=0] (Optional) Column number within resource
+              containing error.
+              If aURI is null, then aDocument->GetDocumentURI() is used.
+   *   @param [aLocationMode] (Optional) Specifies the behavior if
+              error location information is omitted.
+   */
+  static nsresult ReportToConsoleByWindowID(const nsAString& aErrorText,
+                                            uint32_t aErrorFlags,
+                                            const nsACString& aCategory,
+                                            uint64_t aInnerWindowID,
+                                            nsIURI* aURI = nullptr,
+                                            const nsAFlatString& aSourceLine
+                                              = EmptyString(),
+                                            uint32_t aLineNumber = 0,
+                                            uint32_t aColumnNumber = 0,
+                                            MissingErrorLocationMode aLocationMode
+                                              = eUSE_CALLING_LOCATION);
 
   /**
    * Report a localized error message to the error console.
@@ -1528,12 +1578,12 @@ public:
   static bool IsSystemPrincipal(nsIPrincipal* aPrincipal);
 
   /**
-   * Returns true if aPrincipal is an nsExpandedPrincipal.
+   * Returns true if aPrincipal is an ExpandedPrincipal.
    */
   static bool IsExpandedPrincipal(nsIPrincipal* aPrincipal);
 
   /**
-   * Returns true if aPrincipal is the system or an nsExpandedPrincipal.
+   * Returns true if aPrincipal is the system or an ExpandedPrincipal.
    */
   static bool IsSystemOrExpandedPrincipal(nsIPrincipal* aPrincipal)
   {
@@ -2059,23 +2109,6 @@ public:
   static bool IsFrameTimingEnabled();
 
   /*
-   * Returns true if URL setters should percent encode the Hash/Ref segment
-   * and getters should return the percent decoded value of the segment
-   */
-  static bool EncodeDecodeURLHash()
-  {
-    return sEncodeDecodeURLHash;
-  }
-
-  /*
-   * Returns true if URL getters should percent decode the value of the segment
-   */
-  static bool GettersDecodeURLHash()
-  {
-    return sGettersDecodeURLHash && sEncodeDecodeURLHash;
-  }
-
-  /*
    * Returns true if the browser should attempt to prevent the given caller type
    * from collecting distinctive information about the browser that could
    * be used to "fingerprint" and track the user across websites.
@@ -2367,8 +2400,8 @@ public:
    */
   static void GetSelectionInTextControl(mozilla::dom::Selection* aSelection,
                                         Element* aRoot,
-                                        int32_t& aOutStartOffset,
-                                        int32_t& aOutEndOffset);
+                                        uint32_t& aOutStartOffset,
+                                        uint32_t& aOutEndOffset);
 
   /**
    * Takes a frame for anonymous content within a text control (<input> or
@@ -2447,9 +2480,14 @@ public:
   static bool IsForbiddenResponseHeader(const nsACString& aHeader);
 
   /**
-   * Returns the inner window ID for the window associated with a request,
+   * Returns the inner window ID for the window associated with a request.
    */
   static uint64_t GetInnerWindowID(nsIRequest* aRequest);
+
+  /**
+   * Returns the inner window ID for the window associated with a load group.
+   */
+  static uint64_t GetInnerWindowID(nsILoadGroup* aLoadGroup);
 
   /**
    * If the hostname for aURI is an IPv6 it encloses it in brackets,
@@ -2746,6 +2784,37 @@ public:
                                         nsIPrincipal** aLoadingPrincipal,
                                         nsContentPolicyType& aContentPolicyType);
 
+  static nsresult
+  CreateJSValueFromSequenceOfObject(JSContext* aCx,
+                                    const mozilla::dom::Sequence<JSObject*>& aTransfer,
+                                    JS::MutableHandle<JS::Value> aValue);
+
+  static bool
+  IsWebComponentsEnabled() { return sIsWebComponentsEnabled; }
+
+  /**
+   * Walks up the tree from aElement until it finds an element that is
+   * not native anonymous content.  aElement must be NAC itself.
+   */
+  static Element* GetClosestNonNativeAnonymousAncestor(Element* aElement);
+
+  /**
+   * Returns one of the nsIObjectLoadingContent::TYPE_ values describing the
+   * content type which will be used for the given MIME type when loaded within
+   * an nsObjectLoadingContent.
+   *
+   * NOTE: This method doesn't take capabilities into account. The caller must
+   * take that into account.
+   *
+   * @param aMIMEType  The MIME type of the document being loaded.
+   * @param aContent The nsIContent object which is performing the load. May be
+   *                 nullptr in which case the docshell's plugin permissions
+   *                 will not be checked.
+   */
+  static uint32_t
+  HtmlObjectContentTypeForMIMEType(const nsCString& aMIMEType,
+                                   nsIContent* aContent);
+
 private:
   static bool InitializeEventTable();
 
@@ -2772,7 +2841,8 @@ private:
 
   static void DropFragmentParsers();
 
-  static bool MatchClassNames(nsIContent* aContent, int32_t aNamespaceID,
+  static bool MatchClassNames(mozilla::dom::Element* aElement,
+                              int32_t aNamespaceID,
                               nsIAtom* aAtom, void* aData);
   static void DestroyClassNameArray(void* aData);
   static void* AllocClassMatchingInfo(nsINode* aRootNode,
@@ -2851,8 +2921,7 @@ private:
   static bool sIsUserTimingLoggingEnabled;
   static bool sIsFrameTimingPrefEnabled;
   static bool sIsExperimentalAutocompleteEnabled;
-  static bool sEncodeDecodeURLHash;
-  static bool sGettersDecodeURLHash;
+  static bool sIsWebComponentsEnabled;
   static bool sPrivacyResistFingerprinting;
   static bool sSendPerformanceTimingNotifications;
   static bool sUseActivityCursor;

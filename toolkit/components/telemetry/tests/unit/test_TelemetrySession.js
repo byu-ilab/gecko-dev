@@ -18,6 +18,7 @@ Cu.import("resource://gre/modules/TelemetrySession.jsm", this);
 Cu.import("resource://gre/modules/TelemetryStorage.jsm", this);
 Cu.import("resource://gre/modules/TelemetryEnvironment.jsm", this);
 Cu.import("resource://gre/modules/TelemetrySend.jsm", this);
+Cu.import("resource://gre/modules/TelemetryUtils.jsm", this);
 Cu.import("resource://gre/modules/Task.jsm", this);
 Cu.import("resource://gre/modules/Promise.jsm", this);
 Cu.import("resource://gre/modules/Preferences.jsm");
@@ -73,12 +74,6 @@ XPCOMUtils.defineLazyGetter(this, "DATAREPORTING_PATH", function() {
 
 var gClientID = null;
 var gMonotonicNow = 0;
-
-function generateUUID() {
-  let str = Cc["@mozilla.org/uuid-generator;1"].getService(Ci.nsIUUIDGenerator).generateUUID().toString();
-  // strip {}
-  return str.substring(1, str.length - 1);
-}
 
 function truncateDateToDays(date) {
   return new Date(date.getFullYear(),
@@ -387,7 +382,7 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
     range: [1, 2],
     bucket_count: 3,
     histogram_type: 3,
-    values: {0:1, 1:0},
+    values: {0: 1, 1: 0},
     sum: 0
   };
   let flag = payload.histograms[TELEMETRY_TEST_FLAG];
@@ -398,7 +393,7 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
     range: [1, 2],
     bucket_count: 3,
     histogram_type: 4,
-    values: {0:1, 1:0},
+    values: {0: 1, 1: 0},
     sum: 1,
   };
   let count = payload.histograms[TELEMETRY_TEST_COUNT];
@@ -410,7 +405,7 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
       range: [1, 2],
       bucket_count: 3,
       histogram_type: 2,
-      values: {0:2, 1:successfulPings, 2:0},
+      values: {0: 2, 1: successfulPings, 2: 0},
       sum: successfulPings
     };
     let tc = payload.histograms[TELEMETRY_SUCCESS];
@@ -453,14 +448,14 @@ function checkPayload(payload, reason, successfulPings, savedPings) {
       range: [1, 2],
       bucket_count: 3,
       histogram_type: 4,
-      values: {0:2, 1:0},
+      values: {0: 2, 1: 0},
       sum: 2,
     },
     "b": {
       range: [1, 2],
       bucket_count: 3,
       histogram_type: 4,
-      values: {0:1, 1:0},
+      values: {0: 1, 1: 0},
       sum: 1,
     },
   };
@@ -606,7 +601,7 @@ add_task(function* test_simplePing() {
   Assert.equal(payload.info.subsessionLength, SESSION_DURATION_IN_MINUTES * 60);
 
   // Restore the UUID generator so we don't mess with other tests.
-  fakeGenerateUUID(generateUUID, generateUUID);
+  fakeGenerateUUID(TelemetryUtils.generateUUID, TelemetryUtils.generateUUID);
 });
 
 // Saves the current session histograms, reloads them, performs a ping
@@ -1272,9 +1267,83 @@ add_task(function* test_environmentChange() {
 
   Assert.equal(ping.payload.histograms[COUNT_ID].sum, 0);
   Assert.ok(!(KEYED_ID in ping.payload.keyedHistograms));
+
+  yield TelemetryController.testShutdown();
+});
+
+add_task(function* test_experimentAnnotations_subsession() {
+  if (gIsAndroid) {
+    // We don't split subsessions on environment changes yet on Android.
+    return;
+  }
+
+  const EXPERIMENT1 = "experiment-1";
+  const EXPERIMENT1_BRANCH = "nice-branch";
+  const EXPERIMENT2 = "experiment-2";
+  const EXPERIMENT2_BRANCH = "other-branch";
+
+  yield TelemetryStorage.testClearPendingPings();
+  PingServer.clearRequests();
+
+  let now = fakeNow(2040, 1, 1, 12, 0, 0);
+  gMonotonicNow = fakeMonotonicNow(gMonotonicNow + 10 * MILLISECONDS_PER_MINUTE);
+
+  // Setup.
+  yield TelemetryController.testReset();
+  TelemetrySend.setServer("http://localhost:" + PingServer.port);
+  Assert.equal(TelemetrySession.getPayload().info.subsessionCounter, 1);
+
+  // Trigger a subsession split with a telemetry annotation.
+  gMonotonicNow = fakeMonotonicNow(gMonotonicNow + 10 * MILLISECONDS_PER_MINUTE);
+  let futureTestDate = futureDate(now, 10 * MILLISECONDS_PER_MINUTE);
+  now = fakeNow(futureTestDate);
+  TelemetryEnvironment.setExperimentActive(EXPERIMENT1, EXPERIMENT1_BRANCH);
+
+  let ping = yield PingServer.promiseNextPing();
+  Assert.ok(!!ping, "A ping must be received.");
+
+  Assert.equal(ping.type, PING_TYPE_MAIN, "The received ping must be a 'main' ping.");
+  Assert.equal(ping.payload.info.reason, REASON_ENVIRONMENT_CHANGE,
+               "The 'main' ping must be triggered by a change in the environment.");
+  // We expect the current experiments to be reported in the next ping, not this
+  // one.
+  Assert.ok(!("experiments" in ping.environment),
+            "The old environment must contain no active experiments.");
+  // Since this change wasn't throttled, the subsession counter must increase.
+  Assert.equal(TelemetrySession.getPayload().info.subsessionCounter, 2,
+               "The experiment annotation must trigger a new subsession.");
+
+  // Add another annotation to the environment. We're not advancing the fake
+  // timer, so no subsession split should happen due to throttling.
+  TelemetryEnvironment.setExperimentActive(EXPERIMENT2, EXPERIMENT2_BRANCH);
+  Assert.equal(TelemetrySession.getPayload().info.subsessionCounter, 2,
+               "The experiment annotation must not trigger a new subsession " +
+               "if throttling happens.");
+  let oldExperiments = TelemetryEnvironment.getActiveExperiments();
+
+  // Fake the timer and remove an annotation, we expect a new subsession split.
+  gMonotonicNow = fakeMonotonicNow(gMonotonicNow + 10 * MILLISECONDS_PER_MINUTE);
+  now = fakeNow(futureDate(now, 10 * MILLISECONDS_PER_MINUTE));
+  TelemetryEnvironment.setExperimentInactive(EXPERIMENT1, EXPERIMENT1_BRANCH);
+
+  ping = yield PingServer.promiseNextPing();
+  Assert.ok(!!ping, "A ping must be received.");
+
+  Assert.equal(ping.type, PING_TYPE_MAIN, "The received ping must be a 'main' ping.");
+  Assert.equal(ping.payload.info.reason, REASON_ENVIRONMENT_CHANGE,
+               "The 'main' ping must be triggered by a change in the environment.");
+  // We expect both experiments to be in this environment.
+  Assert.deepEqual(ping.environment.experiments, oldExperiments,
+                   "The environment must contain both the experiments.");
+  Assert.equal(TelemetrySession.getPayload().info.subsessionCounter, 3,
+               "The removing an experiment annotation must trigger a new subsession.");
+
+  yield TelemetryController.testShutdown();
 });
 
 add_task(function* test_savedPingsOnShutdown() {
+  yield TelemetryController.testReset();
+
   // On desktop, we expect both "saved-session" and "shutdown" pings. We only expect
   // the former on Android.
   const expectedPingCount = (gIsAndroid) ? 1 : 2;
@@ -1359,7 +1428,7 @@ add_task(function* test_savedSessionData() {
   yield TelemetryController.testShutdown();
 
   // Restore the UUID generator so we don't mess with other tests.
-  fakeGenerateUUID(generateUUID, generateUUID);
+  fakeGenerateUUID(TelemetryUtils.generateUUID, TelemetryUtils.generateUUID);
 
   // Load back the serialised session data.
   let data = yield CommonUtils.readJSON(dataFilePath);
@@ -1397,7 +1466,7 @@ add_task(function* test_sessionData_ShortSession() {
   Assert.equal(0, getSnapshot("TELEMETRY_SESSIONDATA_FAILED_VALIDATION").sum);
 
   // Restore the UUID generation functions.
-  fakeGenerateUUID(generateUUID, generateUUID);
+  fakeGenerateUUID(TelemetryUtils.generateUUID, TelemetryUtils.generateUUID);
 
   // Start TelemetryController so that it loads the session data file. We expect the profile
   // subsession counter to be incremented by 1 again.
@@ -1460,7 +1529,7 @@ add_task(function* test_invalidSessionData() {
   yield TelemetryController.testShutdown();
 
   // Restore the UUID generator so we don't mess with other tests.
-  fakeGenerateUUID(generateUUID, generateUUID);
+  fakeGenerateUUID(TelemetryUtils.generateUUID, TelemetryUtils.generateUUID);
 
   // Load back the serialised session data.
   let data = yield CommonUtils.readJSON(dataFilePath);
@@ -1782,8 +1851,12 @@ add_task(function* test_schedulerNothingDue() {
 add_task(function* test_pingExtendedStats() {
   const EXTENDED_PAYLOAD_FIELDS = [
     "chromeHangs", "threadHangStats", "log", "slowSQL", "fileIOReports", "lateWrites",
-    "addonHistograms", "addonDetails", "UIMeasurements", "webrtc"
+    "addonHistograms", "addonDetails", "webrtc"
   ];
+
+  if (AppConstants.platform == "android") {
+    EXTENDED_PAYLOAD_FIELDS.push("UIMeasurements");
+  }
 
   // Reset telemetry and disable sending extended statistics.
   yield TelemetryStorage.testClearPendingPings();

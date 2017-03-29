@@ -7,8 +7,8 @@
 #include "nsSVGEffects.h"
 
 // Keep others in (case-insensitive) order:
-#include "mozilla/RestyleManagerHandle.h"
-#include "mozilla/RestyleManagerHandleInlines.h"
+#include "mozilla/RestyleManager.h"
+#include "mozilla/RestyleManagerInlines.h"
 #include "nsCSSFrameConstructor.h"
 #include "nsISupportsImpl.h"
 #include "nsSVGClipPathFrame.h"
@@ -418,7 +418,8 @@ nsSVGTextPathProperty::DoUpdate()
   if (!frame)
     return;
 
-  NS_ASSERTION(frame->IsFrameOfType(nsIFrame::eSVG) || frame->IsSVGText(),
+  NS_ASSERTION(frame->IsFrameOfType(nsIFrame::eSVG) ||
+               nsSVGUtils::IsInSVGTextSubtree(frame),
                "SVG frame expected");
 
   // Avoid getting into an infinite loop of reflows if the <textPath> is
@@ -670,24 +671,6 @@ bool
 nsSVGEffects::EffectProperties::HasNoOrValidEffects()
 {
   return HasNoOrValidClipPath() && HasNoOrValidMask() && HasNoOrValidFilter();
-}
-
-bool
-nsSVGEffects::EffectProperties::MightHaveNoneSVGMask() const
-{
-  if (!mMask) {
-    return false;
-  }
-
-  const nsTArray<RefPtr<nsSVGPaintingProperty>>& props = mMask->GetProps();
-  for (size_t i = 0; i < props.Length(); i++) {
-    if (!props[i] ||
-        !props[i]->GetReferencedFrame(nsGkAtoms::svgMaskFrame, nullptr)) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 bool

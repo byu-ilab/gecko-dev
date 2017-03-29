@@ -962,8 +962,6 @@ interface nsIDOMWindowUtils : nsISupports {
    */
   void suppressEventHandling(in boolean aSuppress);
 
-  void clearMozAfterPaintEvents();
-
   /**
    * Disable or enable non synthetic test mouse events on *all* windows.
    *
@@ -1566,12 +1564,6 @@ interface nsIDOMWindowUtils : nsISupports {
                                   in AString value2);
 
   /**
-   * Wrap an nsIFile in an DOM File
-   * Returns a File object.
-   */
-  nsISupports wrapDOMFile(in nsIFile aFile);
-
-  /**
    * Get the type of the currently focused html input, if any.
    */
   readonly attribute string focusedInputType;
@@ -1983,6 +1975,26 @@ interface nsIDOMWindowUtils : nsISupports {
    * timeouts.
    */
   boolean isTimeoutTracking(in unsigned long timeoutId);
+
+  /**
+   * Adds an EventStates bit to the element.
+   *
+   * The state string must be one of the following:
+   *   * (none yet; but for example "higlighted" for NS_EVENT_STATE_HIGHLIGHTED)
+   *
+   * The supported state strings are defined in kManuallyManagedStates
+   * in nsDOMWindowUtils.cpp.
+   */
+  void addManuallyManagedState(in nsIDOMElement element,
+                               in AString state);
+
+  /**
+   * Removes the specified EventStates bits from the element.
+   *
+   * See above for the strings that can be passed for |state|.
+   */
+  void removeManuallyManagedState(in nsIDOMElement element,
+                                  in AString state);
 
   // These consts are only for testing purposes.
   const long DEFAULT_MOUSE_POINTER_ID = 0;

@@ -23,8 +23,7 @@ const Cc = Components.classes;
 const Ci = Components.interfaces;
 const Cr = Components.results;
 const Cu = Components.utils;
-// True only if this is the version of pdf.js that is included with firefox.
-const MOZ_CENTRAL = JSON.parse("true");
+
 const PDFJS_EVENT_ID = "pdf.js.message";
 const PDF_CONTENT_TYPE = "application/pdf";
 const PREF_PREFIX = "pdfjs";
@@ -94,7 +93,7 @@ function getIntPref(pref, def) {
 
 function getStringPref(pref, def) {
   try {
-    return Services.prefs.getComplexValue(pref, Ci.nsISupportsString).data;
+    return Services.prefs.getStringPref(pref);
   } catch (ex) {
     return def;
   }

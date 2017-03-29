@@ -20,6 +20,7 @@
 #include "nsNetUtil.h"
 #include "nsScriptLoader.h"
 #include "nsFrameLoader.h"
+#include "nsIInputStream.h"
 #include "nsIXULRuntime.h"
 #include "nsIScriptError.h"
 #include "nsIConsoleService.h"
@@ -34,7 +35,7 @@
 #include "mozilla/Telemetry.h"
 #include "mozilla/dom/File.h"
 #include "mozilla/dom/MessagePort.h"
-#include "mozilla/dom/nsIContentParent.h"
+#include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
 #include "mozilla/dom/ProcessGlobal.h"
 #include "mozilla/dom/SameProcessMessageQueue.h"
@@ -62,6 +63,10 @@
 # if defined(SendMessage)
 #  undef SendMessage
 # endif
+#endif
+
+#ifdef FUZZING
+#include "MessageManagerFuzzer.h"
 #endif
 
 using namespace mozilla;
@@ -632,6 +637,16 @@ nsFrameMessageManager::SendMessage(const nsAString& aMessageName,
     return NS_ERROR_DOM_DATA_CLONE_ERR;
   }
 
+#ifdef FUZZING
+  if (data.DataLength() > 0) {
+    MessageManagerFuzzer::TryMutate(
+      aCx,
+      aMessageName,
+      &data,
+      JS::UndefinedHandleValue);
+  }
+#endif
+
   if (!AllowMessage(data.DataLength(), aMessageName)) {
     return NS_ERROR_FAILURE;
   }
@@ -717,6 +732,12 @@ nsFrameMessageManager::DispatchAsyncMessage(const nsAString& aMessageName,
     return NS_ERROR_DOM_DATA_CLONE_ERR;
   }
 
+#ifdef FUZZING
+  if (data.DataLength()) {
+    MessageManagerFuzzer::TryMutate(aCx, aMessageName, &data, aTransfers);
+  }
+#endif
+
   if (!AllowMessage(data.DataLength(), aMessageName)) {
     return NS_ERROR_FAILURE;
   }
@@ -777,6 +798,12 @@ nsFrameMessageManager::GetChildAt(uint32_t aIndex,
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsFrameMessageManager::ReleaseCachedProcesses()
+{
+  ContentParent::ReleaseCachedProcesses();
+  return NS_OK;
+}
 
 // nsIContentFrameMessageManager
 
@@ -802,9 +829,8 @@ nsFrameMessageManager::PrivateNoteIntentionalCrash()
   if (XRE_IsContentProcess()) {
     mozilla::NoteIntentionalCrash("tab");
     return NS_OK;
-  } else {
-    return NS_ERROR_NOT_IMPLEMENTED;
   }
+  return NS_ERROR_NOT_IMPLEMENTED;
 }
 
 NS_IMETHODIMP
@@ -1655,7 +1681,7 @@ nsMessageManagerScriptExecutor::InitChildGlobalInternal(
   const uint32_t flags = nsIXPConnect::INIT_JS_STANDARD_CLASSES;
 
   JS::CompartmentOptions options;
-  options.creationOptions().setZone(JS::SystemZone);
+  options.creationOptions().setSystemZone();
   options.behaviors().setVersion(JSVERSION_LATEST);
 
   if (xpc::SharedMemoryEnabled()) {

@@ -427,7 +427,7 @@ UnboxArrayPrimitive(JSContext* aCx, const jni::Object::LocalRef& aData,
     });
 
     const size_t len = env->GetArrayLength(jarray);
-    elements.initCapacity(len);
+    NS_ENSURE_TRUE(elements.initCapacity(len), NS_ERROR_FAILURE);
 
     for (size_t i = 0; i < len; i++) {
         NS_ENSURE_TRUE(elements.append((*ToValue)(Type(array[i]))),
@@ -650,7 +650,7 @@ public:
             // Invoke callbacks synchronously if we're already on Gecko thread.
             return aCall();
         }
-        nsAppShell::PostEvent(Move(aCall));
+        NS_DispatchToMainThread(NS_NewRunnableFunction(Move(aCall)));
     }
 
     static void Finalize(const CallbackDelegate::LocalRef& aInstance)
@@ -714,7 +714,7 @@ EventDispatcher::DispatchOnGecko(ListenersList* list, const nsAString& aEvent,
         }
         const nsresult rv = list->listeners[i]->OnEvent(
                 aEvent, aData, aCallback);
-        NS_ENSURE_SUCCESS(rv, rv);
+        Unused << NS_WARN_IF(NS_FAILED(rv));
     }
     return NS_OK;
 }
@@ -964,6 +964,14 @@ EventDispatcher::DispatchToGecko(jni::String::Param aEvent,
     }
 
     DispatchOnGecko(list, event, data, callback);
+}
+
+/* static */
+nsresult
+EventDispatcher::UnboxBundle(JSContext* aCx, jni::Object::Param aData,
+                             JS::MutableHandleValue aOut)
+{
+    return detail::UnboxBundle(aCx, aData, aOut);
 }
 
 } // namespace widget

@@ -626,9 +626,7 @@ public:
     virtual bool SupportsApzWheelInput() const {
       return false;
     }
-    virtual bool SupportsApzTouchInput() const {
-      return false;
-    }
+    bool SupportsApzTouchInput() const;
     bool SupportsApzDragInput() const;
 
     virtual void FlushContentDrawing() {}
@@ -651,6 +649,8 @@ public:
      * Extracted into a function to avoid including gfxPrefs.h from this file.
      */
     static bool PerfWarnings();
+
+    static void NotifyGPUProcessDisabled();
 
     void NotifyCompositorCreated(mozilla::layers::LayersBackend aBackend);
     mozilla::layers::LayersBackend GetCompositorBackend() const {
@@ -820,6 +820,7 @@ private:
 
     void InitCompositorAccelerationPrefs();
     void InitGPUProcessPrefs();
+    void InitWebRenderConfig();
 
     static bool IsDXInterop2Blocked();
 

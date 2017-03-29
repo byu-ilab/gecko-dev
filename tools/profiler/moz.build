@@ -11,13 +11,10 @@ if CONFIG['MOZ_GECKO_PROFILER']:
         'gecko/nsIProfileSaveEvent.idl',
     ]
     EXPORTS += [
-        'public/ProfilerBacktrace.h',
+        'public/CrossProcessProfilerController.h',
         'public/ProfilerMarkers.h',
         'public/PseudoStack.h',
         'public/shared-libraries.h',
-    ]
-    EXPORTS.mozilla += [
-        'public/ProfileGatherer.h',
     ]
     EXTRA_JS_MODULES += [
         'gecko/Profiler.jsm',
@@ -25,14 +22,13 @@ if CONFIG['MOZ_GECKO_PROFILER']:
     UNIFIED_SOURCES += [
         'core/platform.cpp',
         'core/ProfileBuffer.cpp',
-        'core/ProfileEntry.cpp',
+        'core/ProfileBufferEntry.cpp',
         'core/ProfileJSONWriter.cpp',
         'core/ProfilerBacktrace.cpp',
         'core/ProfilerMarkers.cpp',
-        'core/Sampler.cpp',
         'core/StackTop.cpp',
-        'core/SyncProfile.cpp',
         'core/ThreadInfo.cpp',
+        'gecko/CrossProcessProfilerController.cpp',
         'gecko/nsProfiler.cpp',
         'gecko/nsProfilerFactory.cpp',
         'gecko/nsProfilerStartParams.cpp',
@@ -60,14 +56,12 @@ if CONFIG['MOZ_GECKO_PROFILER']:
         ]
         # These files cannot be built in unified mode because of name clashes with mozglue headers on Android.
         SOURCES += [
-            'core/platform-linux.cc',
             'core/shared-libraries-linux.cc',
         ]
         if not CONFIG['MOZ_CRASHREPORTER']:
             SOURCES += [
                 '/toolkit/crashreporter/google-breakpad/src/common/linux/elfutils.cc',
                 '/toolkit/crashreporter/google-breakpad/src/common/linux/file_id.cc',
-                '/toolkit/crashreporter/google-breakpad/src/common/linux/guid_creator.cc',
                 '/toolkit/crashreporter/google-breakpad/src/common/linux/linux_libc_support.cc',
                 '/toolkit/crashreporter/google-breakpad/src/common/linux/memory_mapped_file.cc',
             ]
@@ -77,12 +71,10 @@ if CONFIG['MOZ_GECKO_PROFILER']:
             ]
     elif CONFIG['OS_TARGET'] == 'Darwin':
         UNIFIED_SOURCES += [
-            'core/platform-macos.cc',
             'core/shared-libraries-macos.cc',
         ]
     elif CONFIG['OS_TARGET'] == 'WINNT':
         SOURCES += [
-            'core/platform-win32.cc',
             'core/shared-libraries-win32.cc',
         ]
 
@@ -124,6 +116,7 @@ include('/ipc/chromium/chromium-config.mozbuild')
 
 EXPORTS += [
     'public/GeckoProfiler.h',
+    'public/ProfilerControllingProcess.h',
 ]
 
 if CONFIG['MOZ_TASK_TRACER']:

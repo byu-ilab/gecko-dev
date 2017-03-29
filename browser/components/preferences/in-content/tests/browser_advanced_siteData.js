@@ -12,6 +12,7 @@ Services.scriptloader.loadSubScript("resource://testing-common/sinon-1.16.1.js")
 const TEST_HOST = "example.com";
 const TEST_ORIGIN = "http://" + TEST_HOST;
 const TEST_BASE_URL = TEST_ORIGIN + "/browser/browser/components/preferences/in-content/tests/";
+const REMOVE_DIALOG_URL = "chrome://browser/content/preferences/siteDataRemoveSelected.xul";
 
 const { NetUtil } = Cu.import("resource://gre/modules/NetUtil.jsm", {});
 const { SiteDataManager } = Cu.import("resource:///modules/SiteDataManager.jsm", {});
@@ -131,24 +132,38 @@ function getQuotaUsage(origin) {
   return new Promise(resolve => {
     let uri = NetUtil.newURI(origin);
     let principal = Services.scriptSecurityManager.createCodebasePrincipal(uri, {});
-    Services.qms.getUsageForPrincipal(principal, request => resolve(request.usage));
+    Services.qms.getUsageForPrincipal(principal, request => resolve(request.result.usage));
   });
 }
 
-function getCacheUsage() {
-  return new Promise(resolve => {
-    let obs = {
-      onNetworkCacheDiskConsumption(usage) {
-        resolve(usage);
-      },
-      QueryInterface: XPCOMUtils.generateQI([
-        Components.interfaces.nsICacheStorageConsumptionObserver,
-        Components.interfaces.nsISupportsWeakReference
-      ]),
-    };
-    Services.cache2.asyncGetDiskConsumption(obs);
-  });
-}
+// XXX: The intermittent bug 1331851
+// The implementation of nsICacheStorageConsumptionObserver must be passed as weak referenced,
+// so we must hold this observer here well. If we didn't, there would be a chance that
+// in Linux debug test run the observer was released before the operation at gecko was completed
+// (may be because of a relatively quicker GC cycle or a relatively slower operation).
+// As a result of that, we would never get the cache usage we want so the test would fail from timeout.
+const cacheUsageGetter = {
+  _promise: null,
+  _resolve: null,
+  get() {
+    if (!this._promise) {
+      this._promise = new Promise(resolve => {
+        this._resolve = resolve;
+        Services.cache2.asyncGetDiskConsumption(this);
+      });
+    }
+    return this._promise;
+  },
+  // nsICacheStorageConsumptionObserver implementations
+  onNetworkCacheDiskConsumption(usage) {
+    cacheUsageGetter._promise = null;
+    cacheUsageGetter._resolve(usage);
+  },
+  QueryInterface: XPCOMUtils.generateQI([
+    Components.interfaces.nsICacheStorageConsumptionObserver,
+    Components.interfaces.nsISupportsWeakReference
+  ]),
+};
 
 function openSettingsDialog() {
   let doc = gBrowser.selectedBrowser.contentDocument;
@@ -187,6 +202,22 @@ function promiseCookiesCleared() {
   });
 }
 
+function assertSitesListed(doc, origins) {
+  let frameDoc = doc.getElementById("dialogFrame").contentDocument;
+  let removeBtn = frameDoc.getElementById("removeSelected");
+  let removeAllBtn = frameDoc.getElementById("removeAll");
+  let sitesList = frameDoc.getElementById("sitesList");
+  let totalSitesNumber = sitesList.getElementsByTagName("richlistitem").length;
+  is(totalSitesNumber, origins.length, "Should list the right sites number");
+  origins.forEach(origin => {
+    let site = sitesList.querySelector(`richlistitem[data-origin="${origin}"]`);
+    let host = site.getAttribute("host");
+    ok(origin.includes(host), `Should list the site of ${origin}`);
+  });
+  is(removeBtn.disabled, false, "Should enable the removeSelected button");
+  is(removeAllBtn.disabled, false, "Should enable the removeAllBtn button");
+}
+
 registerCleanupFunction(function() {
   delete window.sinon;
   delete window.setImmediate;
@@ -205,7 +236,7 @@ add_task(function* () {
   yield openPreferencesViaOpenPreferencesAPI("advanced", "networkTab", { leaveOpen: true });
 
   // Test the initial states
-  let cacheUsage = yield getCacheUsage();
+  let cacheUsage = yield cacheUsageGetter.get();
   let quotaUsage = yield getQuotaUsage(TEST_ORIGIN);
   let totalUsage = yield SiteDataManager.getTotalUsage();
   Assert.greater(cacheUsage, 0, "The cache usage should not be 0");
@@ -224,7 +255,7 @@ add_task(function* () {
   let status = getPersistentStoragePermStatus(TEST_ORIGIN);
   is(status, Ci.nsIPermissionManager.ALLOW_ACTION, "Should not remove permission");
 
-  cacheUsage = yield getCacheUsage();
+  cacheUsage = yield cacheUsageGetter.get();
   quotaUsage = yield getQuotaUsage(TEST_ORIGIN);
   totalUsage = yield SiteDataManager.getTotalUsage();
   Assert.greater(cacheUsage, 0, "The cache usage should not be 0");
@@ -252,7 +283,7 @@ add_task(function* () {
   status = getPersistentStoragePermStatus(TEST_ORIGIN);
   is(status, Ci.nsIPermissionManager.UNKNOWN_ACTION, "Should remove permission");
 
-  cacheUsage = yield getCacheUsage();
+  cacheUsage = yield cacheUsageGetter.get();
   quotaUsage = yield getQuotaUsage(TEST_ORIGIN);
   totalUsage = yield SiteDataManager.getTotalUsage();
   is(cacheUsage, 0, "The cahce usage should be removed");
@@ -370,28 +401,18 @@ add_task(function* () {
 
   searchBox.value = "xyz";
   searchBox.doCommand();
-  assertSitesListed(mockOrigins.filter(o => o.includes("xyz")));
+  assertSitesListed(doc, mockOrigins.filter(o => o.includes("xyz")));
 
   searchBox.value = "bar";
   searchBox.doCommand();
-  assertSitesListed(mockOrigins.filter(o => o.includes("bar")));
+  assertSitesListed(doc, mockOrigins.filter(o => o.includes("bar")));
 
   searchBox.value = "";
   searchBox.doCommand();
-  assertSitesListed(mockOrigins);
+  assertSitesListed(doc, mockOrigins);
 
   mockSiteDataManager.unregister();
   yield BrowserTestUtils.removeTab(gBrowser.selectedTab);
-
-  function assertSitesListed(origins) {
-    let sitesList = frameDoc.getElementById("sitesList");
-    let totalSitesNumber = sitesList.getElementsByTagName("richlistitem").length;
-    is(totalSitesNumber, origins.length, "Should list the right sites number");
-    origins.forEach(origin => {
-      let site = sitesList.querySelector(`richlistitem[data-origin="${origin}"]`);
-      ok(site instanceof XULElement, `Should list the site of ${origin}`);
-    });
-  }
 });
 
 // Test selecting and removing all sites one by one
@@ -478,19 +499,23 @@ add_task(function* () {
   function assertAllSitesListed() {
     frameDoc = doc.getElementById("dialogFrame").contentDocument;
     let removeBtn = frameDoc.getElementById("removeSelected");
+    let removeAllBtn = frameDoc.getElementById("removeAll");
     let sitesList = frameDoc.getElementById("sitesList");
     let sites = sitesList.getElementsByTagName("richlistitem");
     is(sites.length, fakeOrigins.length, "Should list all sites");
     is(removeBtn.disabled, false, "Should enable the removeSelected button");
+    is(removeAllBtn.disabled, false, "Should enable the removeAllBtn button");
   }
 
   function assertAllSitesNotListed() {
     frameDoc = doc.getElementById("dialogFrame").contentDocument;
     let removeBtn = frameDoc.getElementById("removeSelected");
+    let removeAllBtn = frameDoc.getElementById("removeAll");
     let sitesList = frameDoc.getElementById("sitesList");
     let sites = sitesList.getElementsByTagName("richlistitem");
     is(sites.length, 0, "Should not list all sites");
     is(removeBtn.disabled, true, "Should disable the removeSelected button");
+    is(removeAllBtn.disabled, true, "Should disable the removeAllBtn button");
   }
 });
 
@@ -512,7 +537,6 @@ add_task(function* () {
   yield updatePromise;
   yield openSettingsDialog();
 
-  const removeDialogURL = "chrome://browser/content/preferences/siteDataRemoveSelected.xul";
   let doc = gBrowser.selectedBrowser.contentDocument;
   let frameDoc = null;
   let saveBtn = null;
@@ -521,44 +545,44 @@ add_task(function* () {
   let settingsDialogClosePromise = null;
 
   // Test the initial state
-  assertSitesListed(fakeOrigins);
+  assertSitesListed(doc, fakeOrigins);
 
   // Test the "Cancel" button
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = doc.getElementById("dialogFrame").contentDocument;
   cancelBtn = frameDoc.getElementById("cancel");
   removeSelectedSite(fakeOrigins.slice(0, 4));
-  assertSitesListed(fakeOrigins.slice(4));
+  assertSitesListed(doc, fakeOrigins.slice(4));
   cancelBtn.doCommand();
   yield settingsDialogClosePromise;
   yield openSettingsDialog();
-  assertSitesListed(fakeOrigins);
+  assertSitesListed(doc, fakeOrigins);
 
   // Test the "Save Changes" button but canceling save
-  removeDialogOpenPromise = promiseWindowDialogOpen("cancel", removeDialogURL);
+  removeDialogOpenPromise = promiseWindowDialogOpen("cancel", REMOVE_DIALOG_URL);
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = doc.getElementById("dialogFrame").contentDocument;
   saveBtn = frameDoc.getElementById("save");
   removeSelectedSite(fakeOrigins.slice(0, 4));
-  assertSitesListed(fakeOrigins.slice(4));
+  assertSitesListed(doc, fakeOrigins.slice(4));
   saveBtn.doCommand();
   yield removeDialogOpenPromise;
   yield settingsDialogClosePromise;
   yield openSettingsDialog();
-  assertSitesListed(fakeOrigins);
+  assertSitesListed(doc, fakeOrigins);
 
   // Test the "Save Changes" button and accepting save
-  removeDialogOpenPromise = promiseWindowDialogOpen("accept", removeDialogURL);
+  removeDialogOpenPromise = promiseWindowDialogOpen("accept", REMOVE_DIALOG_URL);
   settingsDialogClosePromise = promiseSettingsDialogClose();
   frameDoc = doc.getElementById("dialogFrame").contentDocument;
   saveBtn = frameDoc.getElementById("save");
   removeSelectedSite(fakeOrigins.slice(0, 4));
-  assertSitesListed(fakeOrigins.slice(4));
+  assertSitesListed(doc, fakeOrigins.slice(4));
   saveBtn.doCommand();
   yield removeDialogOpenPromise;
   yield settingsDialogClosePromise;
   yield openSettingsDialog();
-  assertSitesListed(fakeOrigins.slice(4));
+  assertSitesListed(doc, fakeOrigins.slice(4));
 
   // Always clean up the fake origins
   fakeOrigins.forEach(origin => removePersistentStoragePerm(origin));
@@ -578,17 +602,48 @@ add_task(function* () {
       }
     });
   }
+});
 
-  function assertSitesListed(origins) {
-    frameDoc = doc.getElementById("dialogFrame").contentDocument;
-    let removeBtn = frameDoc.getElementById("removeSelected");
-    let sitesList = frameDoc.getElementById("sitesList");
-    let totalSitesNumber = sitesList.getElementsByTagName("richlistitem").length;
-    is(totalSitesNumber, origins.length, "Should list the right sites number");
-    origins.forEach(origin => {
-      let site = sitesList.querySelector(`richlistitem[data-origin="${origin}"]`);
-      ok(!!site, `Should list the site of ${origin}`);
-    });
-    is(removeBtn.disabled, false, "Should enable the removeSelected button");
-  }
+add_task(function* () {
+  yield SpecialPowers.pushPrefEnv({set: [["browser.storageManager.enabled", true]]});
+  let fakeOrigins = [
+    "https://news.foo.com/",
+    "https://books.foo.com/",
+    "https://mails.bar.com/",
+    "https://account.bar.com/",
+    "https://videos.xyz.com/",
+    "https://shopping.xyz.com/"
+  ];
+  fakeOrigins.forEach(origin => addPersistentStoragePerm(origin));
+
+  let updatePromise = promiseSitesUpdated();
+  yield openPreferencesViaOpenPreferencesAPI("advanced", "networkTab", { leaveOpen: true });
+  yield updatePromise;
+  yield openSettingsDialog();
+
+  // Search "foo" to only list foo.com sites
+  let doc = gBrowser.selectedBrowser.contentDocument;
+  let frameDoc = doc.getElementById("dialogFrame").contentDocument;
+  let searchBox = frameDoc.getElementById("searchBox");
+  searchBox.value = "foo";
+  searchBox.doCommand();
+  assertSitesListed(doc, fakeOrigins.slice(0, 2));
+
+  // Test only removing all visible sites listed
+  updatePromise = promiseSitesUpdated();
+  let acceptRemovePromise = promiseWindowDialogOpen("accept", REMOVE_DIALOG_URL);
+  let settingsDialogClosePromise = promiseSettingsDialogClose();
+  let removeAllBtn = frameDoc.getElementById("removeAll");
+  let saveBtn = frameDoc.getElementById("save");
+  removeAllBtn.doCommand();
+  saveBtn.doCommand();
+  yield acceptRemovePromise;
+  yield settingsDialogClosePromise;
+  yield updatePromise;
+  yield openSettingsDialog();
+  assertSitesListed(doc, fakeOrigins.slice(2));
+
+  // Always clean up the fake origins
+  fakeOrigins.forEach(origin => removePersistentStoragePerm(origin));
+  yield BrowserTestUtils.removeTab(gBrowser.selectedTab);
 });

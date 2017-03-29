@@ -131,8 +131,8 @@ FUZZ_P(TlsConnectGeneric, DeterministicTranscript) {
     DisableECDHEServerKeyReuse();
 
     DataBuffer buffer;
-    client_->SetPacketFilter(new TlsConversationRecorder(buffer));
-    server_->SetPacketFilter(new TlsConversationRecorder(buffer));
+    client_->SetPacketFilter(std::make_shared<TlsConversationRecorder>(buffer));
+    server_->SetPacketFilter(std::make_shared<TlsConversationRecorder>(buffer));
 
     // Reset the RNG state.
     EXPECT_EQ(SECSuccess, RNG_ResetForFuzzing());
@@ -158,9 +158,9 @@ FUZZ_P(TlsConnectGeneric, ConnectSendReceive_NullCipher) {
   EnsureTlsSetup();
 
   // Set up app data filters.
-  auto client_recorder = new TlsApplicationDataRecorder();
+  auto client_recorder = std::make_shared<TlsApplicationDataRecorder>();
   client_->SetPacketFilter(client_recorder);
-  auto server_recorder = new TlsApplicationDataRecorder();
+  auto server_recorder = std::make_shared<TlsApplicationDataRecorder>();
   server_->SetPacketFilter(server_recorder);
 
   Connect();
@@ -186,7 +186,7 @@ FUZZ_P(TlsConnectGeneric, ConnectSendReceive_NullCipher) {
 FUZZ_P(TlsConnectGeneric, BogusClientFinished) {
   EnsureTlsSetup();
 
-  auto i1 = new TlsInspectorReplaceHandshakeMessage(
+  auto i1 = std::make_shared<TlsInspectorReplaceHandshakeMessage>(
       kTlsHandshakeFinished,
       DataBuffer(kShortEmptyFinished, sizeof(kShortEmptyFinished)));
   client_->SetPacketFilter(i1);
@@ -198,7 +198,7 @@ FUZZ_P(TlsConnectGeneric, BogusClientFinished) {
 FUZZ_P(TlsConnectGeneric, BogusServerFinished) {
   EnsureTlsSetup();
 
-  auto i1 = new TlsInspectorReplaceHandshakeMessage(
+  auto i1 = std::make_shared<TlsInspectorReplaceHandshakeMessage>(
       kTlsHandshakeFinished,
       DataBuffer(kLongEmptyFinished, sizeof(kLongEmptyFinished)));
   server_->SetPacketFilter(i1);
@@ -212,7 +212,7 @@ FUZZ_P(TlsConnectGeneric, BogusServerAuthSignature) {
   uint8_t msg_type = version_ == SSL_LIBRARY_VERSION_TLS_1_3
                          ? kTlsHandshakeCertificateVerify
                          : kTlsHandshakeServerKeyExchange;
-  server_->SetPacketFilter(new TlsSignatureDamager(msg_type));
+  server_->SetPacketFilter(std::make_shared<TlsSignatureDamager>(msg_type));
   Connect();
   SendReceive();
 }
@@ -223,7 +223,104 @@ FUZZ_P(TlsConnectGeneric, BogusClientAuthSignature) {
   client_->SetupClientAuth();
   server_->RequestClientAuth(true);
   client_->SetPacketFilter(
-      new TlsSignatureDamager(kTlsHandshakeCertificateVerify));
+      std::make_shared<TlsSignatureDamager>(kTlsHandshakeCertificateVerify));
   Connect();
+}
+
+// Check that session ticket resumption works.
+FUZZ_P(TlsConnectGeneric, SessionTicketResumption) {
+  ConfigureSessionCache(RESUME_BOTH, RESUME_TICKET);
+  Connect();
+  SendReceive();
+
+  Reset();
+  ConfigureSessionCache(RESUME_BOTH, RESUME_TICKET);
+  ExpectResumption(RESUME_TICKET);
+  Connect();
+  SendReceive();
+}
+
+class TlsSessionTicketMacDamager : public TlsExtensionFilter {
+ public:
+  TlsSessionTicketMacDamager() {}
+  virtual PacketFilter::Action FilterExtension(uint16_t extension_type,
+                                               const DataBuffer& input,
+                                               DataBuffer* output) {
+    if (extension_type != ssl_session_ticket_xtn &&
+        extension_type != ssl_tls13_pre_shared_key_xtn) {
+      return KEEP;
+    }
+
+    *output = input;
+
+    // Handle everything before TLS 1.3.
+    if (extension_type == ssl_session_ticket_xtn) {
+      // Modify the last byte of the MAC.
+      output->data()[output->len() - 1] ^= 0xff;
+    }
+
+    // Handle TLS 1.3.
+    if (extension_type == ssl_tls13_pre_shared_key_xtn) {
+      TlsParser parser(input);
+
+      uint32_t ids_len;
+      EXPECT_TRUE(parser.Read(&ids_len, 2) && ids_len > 0);
+
+      uint32_t ticket_len;
+      EXPECT_TRUE(parser.Read(&ticket_len, 2) && ticket_len > 0);
+
+      // Modify the last byte of the MAC.
+      output->data()[2 + 2 + ticket_len - 1] ^= 0xff;
+    }
+
+    return CHANGE;
+  }
+};
+
+// Check that session ticket resumption works with a bad MAC.
+FUZZ_P(TlsConnectGeneric, SessionTicketResumptionBadMac) {
+  ConfigureSessionCache(RESUME_BOTH, RESUME_TICKET);
+  Connect();
+  SendReceive();
+
+  Reset();
+  ConfigureSessionCache(RESUME_BOTH, RESUME_TICKET);
+  ExpectResumption(RESUME_TICKET);
+
+  client_->SetPacketFilter(std::make_shared<TlsSessionTicketMacDamager>());
+  Connect();
+  SendReceive();
+}
+
+// Check that session tickets are not encrypted.
+FUZZ_P(TlsConnectGeneric, UnencryptedSessionTickets) {
+  ConfigureSessionCache(RESUME_TICKET, RESUME_TICKET);
+
+  auto i1 = std::make_shared<TlsInspectorRecordHandshakeMessage>(
+      kTlsHandshakeNewSessionTicket);
+  server_->SetPacketFilter(i1);
+  Connect();
+
+  size_t offset = 4; /* lifetime */
+  if (version_ == SSL_LIBRARY_VERSION_TLS_1_3) {
+    offset += 1 + 1 + /* ke_modes */
+              1 + 1;  /* auth_modes */
+  }
+
+  offset += 2 +  /* ticket length */
+            16 + /* SESS_TICKET_KEY_NAME_LEN */
+            16 + /* AES-128 IV */
+            2 +  /* ciphertext length */
+            2;   /* TLS_EX_SESS_TICKET_VERSION */
+
+  // Check the protocol version number.
+  uint32_t tls_version = 0;
+  EXPECT_TRUE(i1->buffer().Read(offset, sizeof(version_), &tls_version));
+  EXPECT_EQ(version_, static_cast<decltype(version_)>(tls_version));
+
+  // Check the cipher suite.
+  uint32_t suite = 0;
+  EXPECT_TRUE(i1->buffer().Read(offset + sizeof(version_), 2, &suite));
+  client_->CheckCipherSuite(static_cast<uint16_t>(suite));
 }
 }

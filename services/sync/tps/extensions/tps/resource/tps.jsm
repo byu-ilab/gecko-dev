@@ -135,9 +135,6 @@ var TPS = {
       Services.obs.addObserver(this, aTopic, true);
     }, this);
 
-    // Configure some logging prefs for Sync itself.
-    Weave.Svc.Prefs.set("log.appender.dump", "Debug");
-
     /* global Authentication */
     Cu.import("resource://tps/auth/fxaccounts.jsm", module);
   },
@@ -590,6 +587,7 @@ var TPS = {
         waiter();
         Logger.logInfo("signout complete");
       }
+      Authentication.deleteEmail(this.config.fx_account.username);
     } catch (e) {
       Logger.logError("Failed to sign out: " + Log.exceptionStr(e));
     }
@@ -624,7 +622,7 @@ var TPS = {
       serverRecordDumpStr = JSON.stringify(serverRecords);
 
       let validator = new BookmarkValidator();
-      let {problemData} = validator.compareServerWithClient(serverRecords, clientTree);
+      let {problemData} = Async.promiseSpinningly(validator.compareServerWithClient(serverRecords, clientTree));
 
       for (let {name, count} of problemData.getSummary()) {
         // Exclude mobile showing up on the server hackily so that we don't

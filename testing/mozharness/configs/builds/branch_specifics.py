@@ -184,69 +184,6 @@ config = {
             },
         },
     },
-    'mozilla-esr45': {
-        'enable_release_promotion': True,
-        'repo_path': 'releases/mozilla-esr45',
-        'update_channel': 'esr',
-        'branch_uses_per_checkin_strategy': True,
-        'use_branch_in_symbols_extra_buildid': False,
-        'stage_server': 'upload.ffxbld.productdelivery.prod.mozaws.net',
-        'platform_overrides': {
-            'linux': {
-                'src_mozconfig': 'browser/config/mozconfigs/linux32/release',
-                'force_clobber': True,
-            },
-            'linux64': {
-                'src_mozconfig': 'browser/config/mozconfigs/linux64/release',
-                'force_clobber': True,
-            },
-            'macosx64': {
-                'src_mozconfig': 'browser/config/mozconfigs/macosx-universal/release',
-                'force_clobber': True,
-            },
-            'win32': {
-                'src_mozconfig': 'browser/config/mozconfigs/win32/release',
-                'force_clobber': True,
-            },
-            'win64': {
-                'src_mozconfig': 'browser/config/mozconfigs/win64/release',
-                'force_clobber': True,
-            },
-            'linux-debug': {
-                'update_channel': 'default',
-            },
-            'linux64-debug': {
-                'update_channel': 'default',
-            },
-            'linux64-asan-debug': {
-                'update_channel': 'default',
-            },
-            'linux64-asan': {
-                'update_channel': 'default',
-            },
-            'linux64-st-an-debug': {
-                'update_channel': 'default',
-            },
-            'linux64-st-an': {
-                'update_channel': 'default',
-            },
-            'macosx64-debug': {
-                'update_channel': 'default',
-            },
-            'macosx64-st-an': {
-                'update_channel': 'default',
-            },
-            'macosx64-st-an-debug': {
-                'update_channel': 'default',
-            },
-            'win32-debug': {
-                'update_channel': 'default',
-            },
-            'win64-debug': {
-                'update_channel': 'default',
-            },
-        },
-    },
     'mozilla-aurora': {
         'repo_path': 'releases/mozilla-aurora',
         'update_channel': 'aurora',
@@ -322,7 +259,7 @@ config = {
     },
     # 'holly': {},
     'jamun': {
-        'update_channel': 'release-dev',
+        'update_channel': 'beta-dev',
         'enable_release_promotion': 1,
         'platform_overrides': {
             'linux': {
@@ -350,7 +287,7 @@ config = {
                 'update_channel': 'default',
             },
             'macosx64': {
-                'src_mozconfig': 'browser/config/mozconfigs/macosx-universal/release',
+                'src_mozconfig': 'browser/config/mozconfigs/macosx64/release',
             },
             'macosx64-debug': {
                 'update_channel': 'default',

@@ -37,8 +37,8 @@ config = {
     'tooltool_script': ["/builds/tooltool.py"],
     'tooltool_bootstrap': "setup.sh",
     'enable_count_ctors': False,
-    'enable_talos_sendchange': True,
-    'enable_unittest_sendchange': True,
+    'enable_talos_sendchange': False,
+    'enable_unittest_sendchange': False,
     #########################################################################
 
 
@@ -79,5 +79,6 @@ config = {
     },
     'src_mozconfig': 'browser/config/mozconfigs/macosx64/nightly',
     'tooltool_manifest_src': 'browser/config/tooltool-manifests/macosx64/cross-releng.manifest',
+    'artifact_flag_build_variant_in_try': 'cross-artifact',
     #########################################################################
 }

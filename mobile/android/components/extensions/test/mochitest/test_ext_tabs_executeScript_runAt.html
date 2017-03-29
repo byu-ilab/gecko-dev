@@ -34,7 +34,7 @@ add_task(function* testExecuteScript() {
     const BASE = "http://mochi.test:8888/tests/mobile/android/components/extensions/test/mochitest/";
     const URL = BASE + "file_iframe_document.sjs";
 
-    const MAX_TRIES = 10;
+    const MAX_TRIES = 30;
 
     try {
       [tab] = await browser.tabs.query({active: true, currentWindow: true});
@@ -86,7 +86,7 @@ add_task(function* testExecuteScript() {
 
         // If we have the earliest valid states for each script, we're done.
         // Otherwise, try again.
-        success = (states[0] == "loading" || DEBUG &&
+        success = ((states[0] == "loading" || DEBUG) &&
                    states[1] == "interactive" &&
                    states[2] == "complete");
       }

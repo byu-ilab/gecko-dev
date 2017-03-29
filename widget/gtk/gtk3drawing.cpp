@@ -631,16 +631,8 @@ static gint
 moz_gtk_scrollbar_trough_paint(WidgetNodeType widget,
                                cairo_t *cr, const GdkRectangle* rect,
                                GtkWidgetState* state,
-                               GtkScrollbarTrackFlags flags,
                                GtkTextDirection direction)
 {
-    if (flags & MOZ_GTK_TRACK_OPAQUE) {
-        GtkStyleContext* style = ClaimStyleContext(MOZ_GTK_WINDOW, direction);
-        gtk_render_background(style, cr,
-                              rect->x, rect->y, rect->width, rect->height);
-        ReleaseStyleContext(style);
-    }
-
     GtkStyleContext* style = ClaimStyleContext(widget, direction);
     moz_gtk_draw_styled_frame(style, cr, rect, state->focused);
     ReleaseStyleContext(style);
@@ -2506,11 +2498,11 @@ void
 moz_gtk_get_scale_metrics(GtkOrientation orient, gint* scale_width,
                           gint* scale_height)
 {
-  WidgetNodeType widget = (orient == GTK_ORIENTATION_HORIZONTAL) ?
-                           MOZ_GTK_SCALE_HORIZONTAL :
-                           MOZ_GTK_SCALE_VERTICAL;
-
   if (gtk_check_version(3, 20, 0) != nullptr) {
+      WidgetNodeType widget = (orient == GTK_ORIENTATION_HORIZONTAL) ?
+                               MOZ_GTK_SCALE_HORIZONTAL :
+                               MOZ_GTK_SCALE_VERTICAL;
+
       gint thumb_length, thumb_height, trough_border;
       moz_gtk_get_scalethumb_metrics(orient, &thumb_length, &thumb_height);
 
@@ -2526,12 +2518,10 @@ moz_gtk_get_scale_metrics(GtkOrientation orient, gint* scale_width,
       }
       ReleaseStyleContext(style);
   } else {
-      GtkStyleContext* style = ClaimStyleContext(widget);
-      gtk_style_context_get(style, gtk_style_context_get_state(style),
-                            "min-width", scale_width,
-                            "min-height", scale_height,
-                            nullptr);
-      ReleaseStyleContext(style);
+      WidgetNodeType widget = (orient == GTK_ORIENTATION_HORIZONTAL) ?
+                               MOZ_GTK_SCALE_TROUGH_HORIZONTAL :
+                               MOZ_GTK_SCALE_TROUGH_VERTICAL;
+      moz_gtk_get_widget_min_size(widget, scale_width, scale_height);
   }
 }
 
@@ -2554,10 +2544,28 @@ moz_gtk_get_scalethumb_metrics(GtkOrientation orient, gint* thumb_length, gint* 
                                MOZ_GTK_SCALE_THUMB_HORIZONTAL:
                                MOZ_GTK_SCALE_THUMB_VERTICAL;
       GtkStyleContext* style = ClaimStyleContext(widget);
-      gtk_style_context_get(style, gtk_style_context_get_state(style),
-                            "min-width", thumb_length,
-                            "min-height", thumb_height,
+
+      gint min_width, min_height;
+      GtkStateFlags state = gtk_style_context_get_state(style);
+      gtk_style_context_get(style, state,
+                            "min-width", &min_width,
+                            "min-height", &min_height,
                              nullptr);
+      GtkBorder margin;
+      gtk_style_context_get_margin(style, state, &margin);
+      gint margin_width = margin.left + margin.right;
+      gint margin_height = margin.top + margin.bottom;
+
+      // Negative margin of slider element also determines its minimal size
+      // so use bigger of those two values.
+      if (min_width < -margin_width)
+          min_width = -margin_width;
+      if (min_height < -margin_height)
+          min_height = -margin_height;
+
+      *thumb_length = min_width;
+      *thumb_height = min_height;
+
       ReleaseStyleContext(style);
   }
 
@@ -2623,24 +2631,27 @@ moz_gtk_widget_paint(WidgetNodeType widget, cairo_t *cr,
         break;
     case MOZ_GTK_SCROLLBAR_HORIZONTAL:
     case MOZ_GTK_SCROLLBAR_VERTICAL:
+        if (flags & MOZ_GTK_TRACK_OPAQUE) {
+            GtkStyleContext* style =
+                ClaimStyleContext(MOZ_GTK_WINDOW, direction);
+            gtk_render_background(style, cr,
+                                  rect->x, rect->y, rect->width, rect->height);
+            ReleaseStyleContext(style);
+        }
         if (gtk_check_version(3,20,0) == nullptr) {
           return moz_gtk_scrollbar_paint(widget, cr, rect, state, direction);
         } else {
           WidgetNodeType trough_widget = (widget == MOZ_GTK_SCROLLBAR_HORIZONTAL) ?
               MOZ_GTK_SCROLLBAR_TROUGH_HORIZONTAL : MOZ_GTK_SCROLLBAR_TROUGH_VERTICAL;
           return moz_gtk_scrollbar_trough_paint(trough_widget, cr, rect,
-                                                state,
-                                                (GtkScrollbarTrackFlags) flags,
-                                                direction);
+                                                state, direction);
         }
         break;
     case MOZ_GTK_SCROLLBAR_TROUGH_HORIZONTAL:
     case MOZ_GTK_SCROLLBAR_TROUGH_VERTICAL:
         if (gtk_check_version(3,20,0) == nullptr) {
           return moz_gtk_scrollbar_trough_paint(widget, cr, rect,
-                                                state,
-                                                (GtkScrollbarTrackFlags) flags,
-                                                direction);
+                                                state, direction);
         }
         break;
     case MOZ_GTK_SCROLLBAR_THUMB_HORIZONTAL:

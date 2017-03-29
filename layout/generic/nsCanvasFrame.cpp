@@ -15,6 +15,7 @@
 #include "nsStyleContext.h"
 #include "nsRenderingContext.h"
 #include "nsGkAtoms.h"
+#include "nsIFrameInlines.h"
 #include "nsIPresShell.h"
 #include "nsDisplayList.h"
 #include "nsCSSFrameConstructor.h"
@@ -182,7 +183,6 @@ nsCanvasFrame::SetHasFocus(bool aHasFocus)
   return NS_OK;
 }
 
-#ifdef DEBUG
 void
 nsCanvasFrame::SetInitialChildList(ChildListID     aListID,
                                    nsFrameList&    aChildList)
@@ -191,12 +191,14 @@ nsCanvasFrame::SetInitialChildList(ChildListID     aListID,
                aChildList.IsEmpty() || aChildList.OnlyChild(),
                "Primary child list can have at most one frame in it");
   nsContainerFrame::SetInitialChildList(aListID, aChildList);
+  MaybePropagateRootElementWritingMode();
 }
 
 void
 nsCanvasFrame::AppendFrames(ChildListID     aListID,
                             nsFrameList&    aFrameList)
 {
+#ifdef DEBUG
   MOZ_ASSERT(aListID == kPrincipalList, "unexpected child list");
   if (!mFrames.IsEmpty()) {
     for (nsFrameList::Enumerator e(aFrameList); !e.AtEnd(); e.Next()) {
@@ -207,7 +209,9 @@ nsCanvasFrame::AppendFrames(ChildListID     aListID,
     }
   }
   nsFrame::VerifyDirtyBitSet(aFrameList);
+#endif
   nsContainerFrame::AppendFrames(aListID, aFrameList);
+  MaybePropagateRootElementWritingMode();
 }
 
 void
@@ -219,8 +223,10 @@ nsCanvasFrame::InsertFrames(ChildListID     aListID,
   // as appending
   MOZ_ASSERT(!aPrevFrame, "unexpected previous sibling frame");
   AppendFrames(aListID, aFrameList);
+  MaybePropagateRootElementWritingMode();
 }
 
+#ifdef DEBUG
 void
 nsCanvasFrame::RemoveFrame(ChildListID     aListID,
                            nsIFrame*       aOldFrame)
@@ -269,6 +275,10 @@ nsDisplayCanvasBackgroundColor::BuildLayer(nsDisplayListBuilder* aBuilder,
     return nullptr;
   }
 
+  if (aManager->GetBackendType() == layers::LayersBackend::LAYERS_WR) {
+    return BuildDisplayItemLayer(aBuilder, aManager, aContainerParameters);
+  }
+
   RefPtr<ColorLayer> layer = static_cast<ColorLayer*>
     (aManager->GetLayerBuilder()->GetLeafLayerFor(aBuilder, this));
   if (!layer) {
@@ -290,6 +300,27 @@ nsDisplayCanvasBackgroundColor::BuildLayer(nsDisplayListBuilder* aBuilder,
                                                       aContainerParameters.mOffset.y, 0));
 
   return layer.forget();
+}
+
+void
+nsDisplayCanvasBackgroundColor::CreateWebRenderCommands(mozilla::wr::DisplayListBuilder& aBuilder,
+                                                        nsTArray<WebRenderParentCommand>& aParentCommands,
+                                                        WebRenderDisplayItemLayer* aLayer)
+{
+  nsCanvasFrame* frame = static_cast<nsCanvasFrame*>(mFrame);
+  nsPoint offset = ToReferenceFrame();
+  nsRect bgClipRect = frame->CanvasArea() + offset;
+  int32_t appUnitsPerDevPixel = mFrame->PresContext()->AppUnitsPerDevPixel();
+
+  Rect devPxRect(Float(bgClipRect.x / appUnitsPerDevPixel),
+                 Float(bgClipRect.y / appUnitsPerDevPixel),
+                 Float(bgClipRect.width / appUnitsPerDevPixel),
+                 Float(bgClipRect.height / appUnitsPerDevPixel));
+
+  Rect transformedRect = aLayer->RelativeToParent(devPxRect);
+  aBuilder.PushRect(wr::ToWrRect(transformedRect),
+                    aBuilder.BuildClipRegion(wr::ToWrRect(transformedRect)),
+                    wr::ToWrColor(ToDeviceColor(mColor)));
 }
 
 #ifdef MOZ_DUMP_PAINTING
@@ -649,7 +680,7 @@ nsCanvasFrame::Reflow(nsPresContext*           aPresContext,
   NS_FRAME_TRACE_REFLOW_IN("nsCanvasFrame::Reflow");
 
   // Initialize OUT parameter
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
 
   nsCanvasFrame* prevCanvasFrame = static_cast<nsCanvasFrame*>
                                                (GetPrevInFlow());
@@ -715,9 +746,9 @@ nsCanvasFrame::Reflow(nsPresContext*           aPresContext,
     FinishReflowChild(kidFrame, aPresContext, kidDesiredSize, &kidReflowInput,
                       kidWM, kidPt, containerSize, 0);
 
-    if (!NS_FRAME_IS_FULLY_COMPLETE(aStatus)) {
+    if (!aStatus.IsFullyComplete()) {
       nsIFrame* nextFrame = kidFrame->GetNextInFlow();
-      NS_ASSERTION(nextFrame || aStatus & NS_FRAME_REFLOW_NEXTINFLOW,
+      NS_ASSERTION(nextFrame || aStatus.NextInFlowNeedsReflow(),
         "If it's incomplete and has no nif yet, it must flag a nif reflow.");
       if (!nextFrame) {
         nextFrame = aPresContext->PresShell()->FrameConstructor()->
@@ -728,7 +759,7 @@ nsCanvasFrame::Reflow(nsPresContext*           aPresContext,
         // aren't any other frames we need to isolate them from
         // during reflow.
       }
-      if (NS_FRAME_OVERFLOW_IS_INCOMPLETE(aStatus)) {
+      if (aStatus.IsOverflowIncomplete()) {
         nextFrame->AddStateBits(NS_FRAME_IS_OVERFLOW_CONTAINER);
       }
     }
@@ -800,6 +831,17 @@ nsCanvasFrame::GetContentForEvent(WidgetEvent* aEvent,
   }
 
   return rv;
+}
+
+void
+nsCanvasFrame::MaybePropagateRootElementWritingMode()
+{
+  nsIFrame* child = PrincipalChildList().FirstChild();
+  if (child && child->GetContent() &&
+      child->GetContent() == PresContext()->Document()->GetRootElement()) {
+    nsIFrame* childPrimary = child->GetContent()->GetPrimaryFrame();
+    PropagateRootElementWritingMode(childPrimary->GetWritingMode());
+  }
 }
 
 #ifdef DEBUG_FRAME_DUMP

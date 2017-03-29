@@ -183,6 +183,7 @@ config = {
         "plain-gpu": ["--subsuite=gpu"],
         "plain-clipboard": ["--subsuite=clipboard"],
         "plain-chunked": ["--chunk-by-dir=4"],
+        "plain-chunked-coverage": ["--chunk-by-dir=4", "--timeout=1200"],
         "mochitest-media": ["--subsuite=media"],
         "chrome": ["--flavor=chrome"],
         "chrome-gpu": ["--flavor=chrome", "--subsuite=gpu"],
@@ -203,7 +204,8 @@ config = {
         "jetpack-package-clipboard": ["--flavor=jetpack-package", "--subsuite=clipboard"],
         "jetpack-addon": ["--flavor=jetpack-addon"],
         "a11y": ["--flavor=a11y"],
-        "mochitest-style": ["--disable-e10s", "layout/style/test"],
+        "plain-style": ["--failure-pattern-file=stylo-failures.md", "layout/style/test"],
+        "chrome-style": ["--flavor=chrome", "--failure-pattern-file=../stylo-failures.md", "layout/style/test/chrome"],
     },
     # local reftest suites
     "all_reftest_suites": {
@@ -245,7 +247,8 @@ config = {
         },
         "xpcshell-coverage": {
             "options": ["--xpcshell=%(abs_app_dir)s/" + XPCSHELL_NAME,
-                        "--manifest=tests/xpcshell/tests/xpcshell.ini"],
+                        "--manifest=tests/xpcshell/tests/xpcshell.ini",
+                        "--sequential"],
             "tests": []
         },
     },

@@ -10,7 +10,7 @@ from ..try_option_syntax import TryOptionSyntax
 from ..try_option_syntax import RIDEALONG_BUILDS
 from ..graph import Graph
 from ..taskgraph import TaskGraph
-from .util import TestTask
+from ..task import Task
 from mozunit import main
 
 # an empty graph, for things that don't look at it
@@ -18,21 +18,21 @@ empty_graph = TaskGraph({}, Graph(set(), set()))
 
 
 def unittest_task(n, tp):
-    return (n, TestTask('test', n, {
+    return (n, Task('test', n, {
         'unittest_try_name': n,
         'test_platform': tp,
-    }))
+    }, {}))
 
 
 def talos_task(n, tp):
-    return (n, TestTask('test', n, {
+    return (n, Task('test', n, {
         'talos_try_name': n,
         'test_platform': tp,
-    }))
+    }, {}))
 
 tasks = {k: v for k, v in [
     unittest_task('mochitest-browser-chrome', 'linux'),
-    unittest_task('mochitest-e10s-browser-chrome', 'linux64'),
+    unittest_task('mochitest-browser-chrome-e10s', 'linux64'),
     unittest_task('mochitest-chrome', 'linux'),
     unittest_task('mochitest-webgl', 'linux'),
     unittest_task('crashtest-e10s', 'linux'),

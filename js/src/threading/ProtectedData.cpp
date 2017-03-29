@@ -13,20 +13,20 @@
 
 namespace js {
 
-#ifdef DEBUG
+#ifdef JS_HAS_PROTECTED_DATA_CHECKS
 
 /* static */ mozilla::Atomic<size_t> AutoNoteSingleThreadedRegion::count(0);
 
-template <AllowedBackgroundThread Background>
+template <AllowedHelperThread Helper>
 static inline bool
-OnBackgroundThread()
+OnHelperThread()
 {
-    if (Background == AllowedBackgroundThread::IonCompile || Background == AllowedBackgroundThread::GCTaskOrIonCompile) {
+    if (Helper == AllowedHelperThread::IonCompile || Helper == AllowedHelperThread::GCTaskOrIonCompile) {
         if (CurrentThreadIsIonCompiling())
             return true;
     }
 
-    if (Background == AllowedBackgroundThread::GCTask || Background == AllowedBackgroundThread::GCTaskOrIonCompile) {
+    if (Helper == AllowedHelperThread::GCTask || Helper == AllowedHelperThread::GCTaskOrIonCompile) {
         if (TlsContext.get()->performingGC || TlsContext.get()->runtime()->gc.onBackgroundThread())
             return true;
     }
@@ -34,35 +34,86 @@ OnBackgroundThread()
     return false;
 }
 
-template <AllowedBackgroundThread Background>
 void
-CheckZoneGroup<Background>::check() const
+CheckThreadLocal::check() const
 {
-    if (OnBackgroundThread<Background>())
+    JSContext* cx = TlsContext.get();
+    MOZ_ASSERT(cx);
+
+    // As for CheckZoneGroup, in a cooperatively scheduled runtime the active
+    // thread is permitted access to thread local state for other suspended
+    // threads in the same runtime.
+    if (cx->isCooperativelyScheduled())
+        MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
+    else
+        MOZ_ASSERT(id == ThisThread::GetId());
+}
+
+template <AllowedHelperThread Helper>
+void
+CheckActiveThread<Helper>::check() const
+{
+    // When interrupting a thread on Windows, changes are made to the runtime
+    // and active thread's state from another thread while the active thread is
+    // suspended. We need a way to mark these accesses as being tantamount to
+    // accesses by the active thread. See bug 1323066.
+#ifndef XP_WIN
+    if (OnHelperThread<Helper>())
         return;
 
+    JSContext* cx = TlsContext.get();
+    MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
+#endif // XP_WIN
+}
+
+template class CheckActiveThread<AllowedHelperThread::None>;
+template class CheckActiveThread<AllowedHelperThread::GCTask>;
+template class CheckActiveThread<AllowedHelperThread::IonCompile>;
+
+template <AllowedHelperThread Helper>
+void
+CheckZoneGroup<Helper>::check() const
+{
+    if (OnHelperThread<Helper>())
+        return;
+
+    JSContext* cx = TlsContext.get();
     if (group) {
-        // This check is disabled for now because helper thread parse tasks
-        // access data in the same zone group that the single main thread is
-        // using. This will be fixed soon (bug 1323066).
-        //MOZ_ASSERT(group->context && group->context == TlsContext.get());
+        if (group->usedByHelperThread) {
+            MOZ_ASSERT(group->ownedByCurrentThread());
+        } else {
+            // This check is disabled on windows for the same reason as in
+            // CheckActiveThread.
+#ifndef XP_WIN
+            // In a cooperatively scheduled runtime the active thread is
+            // permitted access to all zone groups --- even those it has not
+            // entered --- for GC and similar purposes. Since all other
+            // cooperative threads are suspended, these accesses are threadsafe
+            // if the zone group is not in use by a helper thread.
+            //
+            // A corollary to this is that suspended cooperative threads may
+            // not access anything in a zone group, even zone groups they own,
+            // because they're not allowed to interact with the JS API.
+            MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
+#endif
+        }
     } else {
         // |group| will be null for data in the atoms zone. This is protected
         // by the exclusive access lock.
-        MOZ_ASSERT(TlsContext.get()->runtime()->currentThreadHasExclusiveAccess());
+        MOZ_ASSERT(cx->runtime()->currentThreadHasExclusiveAccess());
     }
 }
 
-template class CheckZoneGroup<AllowedBackgroundThread::None>;
-template class CheckZoneGroup<AllowedBackgroundThread::GCTask>;
-template class CheckZoneGroup<AllowedBackgroundThread::IonCompile>;
-template class CheckZoneGroup<AllowedBackgroundThread::GCTaskOrIonCompile>;
+template class CheckZoneGroup<AllowedHelperThread::None>;
+template class CheckZoneGroup<AllowedHelperThread::GCTask>;
+template class CheckZoneGroup<AllowedHelperThread::IonCompile>;
+template class CheckZoneGroup<AllowedHelperThread::GCTaskOrIonCompile>;
 
-template <GlobalLock Lock, AllowedBackgroundThread Background>
+template <GlobalLock Lock, AllowedHelperThread Helper>
 void
-CheckGlobalLock<Lock, Background>::check() const
+CheckGlobalLock<Lock, Helper>::check() const
 {
-    if (OnBackgroundThread<Background>())
+    if (OnHelperThread<Helper>())
         return;
 
     switch (Lock) {
@@ -78,11 +129,11 @@ CheckGlobalLock<Lock, Background>::check() const
     }
 }
 
-template class CheckGlobalLock<GlobalLock::GCLock, AllowedBackgroundThread::None>;
-template class CheckGlobalLock<GlobalLock::ExclusiveAccessLock, AllowedBackgroundThread::None>;
-template class CheckGlobalLock<GlobalLock::ExclusiveAccessLock, AllowedBackgroundThread::GCTask>;
-template class CheckGlobalLock<GlobalLock::HelperThreadLock, AllowedBackgroundThread::None>;
+template class CheckGlobalLock<GlobalLock::GCLock, AllowedHelperThread::None>;
+template class CheckGlobalLock<GlobalLock::ExclusiveAccessLock, AllowedHelperThread::None>;
+template class CheckGlobalLock<GlobalLock::ExclusiveAccessLock, AllowedHelperThread::GCTask>;
+template class CheckGlobalLock<GlobalLock::HelperThreadLock, AllowedHelperThread::None>;
 
-#endif // DEBUG
+#endif // JS_HAS_PROTECTED_DATA_CHECKS
 
 } // namespace js

@@ -5,6 +5,8 @@
 
 /* This content script contains code that requires a tab browser. */
 
+/* eslint-env mozilla/frame-script */
+
 var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -258,7 +260,7 @@ var AboutReaderListener = {
 
   _articlePromise: null,
 
-  _isLeavingReaderMode: false,
+  _isLeavingReaderableReaderMode: false,
 
   init() {
     addEventListener("AboutReaderContentLoaded", this, false, true);
@@ -276,7 +278,7 @@ var AboutReaderListener = {
           this._articlePromise = ReaderMode.parseDocument(content.document).catch(Cu.reportError);
           ReaderMode.enterReaderMode(docShell, content);
         } else {
-          this._isLeavingReaderMode = true;
+          this._isLeavingReaderableReaderMode = this.isReaderableAboutReader;
           ReaderMode.leaveReaderMode(docShell, content);
         }
         break;
@@ -292,6 +294,11 @@ var AboutReaderListener = {
       return false;
     }
     return content.document.documentURI.startsWith("about:reader");
+  },
+
+  get isReaderableAboutReader() {
+    return this.isAboutReader &&
+      !content.document.documentElement.dataset.isError;
   },
 
   handleEvent(aEvent) {
@@ -315,12 +322,12 @@ var AboutReaderListener = {
 
       case "pagehide":
         this.cancelPotentialPendingReadabilityCheck();
-        // this._isLeavingReaderMode is used here to keep the Reader Mode icon
+        // this._isLeavingReaderableReaderMode is used here to keep the Reader Mode icon
         // visible in the location bar when transitioning from reader-mode page
-        // back to the source page.
-        sendAsyncMessage("Reader:UpdateReaderButton", { isArticle: this._isLeavingReaderMode });
-        if (this._isLeavingReaderMode) {
-          this._isLeavingReaderMode = false;
+        // back to the readable source page.
+        sendAsyncMessage("Reader:UpdateReaderButton", { isArticle: this._isLeavingReaderableReaderMode });
+        if (this._isLeavingReaderableReaderMode) {
+          this._isLeavingReaderableReaderMode = false;
         }
         break;
 

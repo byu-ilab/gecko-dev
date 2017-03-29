@@ -5,7 +5,6 @@
 
 package org.mozilla.gecko.tabs;
 
-import org.mozilla.gecko.GeckoAppShell;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.Tab;
 import org.mozilla.gecko.Tabs;
@@ -20,15 +19,19 @@ import android.widget.Button;
 
 import java.util.ArrayList;
 
+import static org.mozilla.gecko.Tab.TabType;
+
 public abstract class TabsLayout extends RecyclerView
         implements TabsPanel.TabsLayout,
         Tabs.OnTabsChangedListener,
         RecyclerViewClickSupport.OnItemClickListener,
-        TabsTouchHelperCallback.DismissListener {
+        TabsTouchHelperCallback.DismissListener,
+        TabsTouchHelperCallback.DragListener {
 
     private static final String LOGTAG = "Gecko" + TabsLayout.class.getSimpleName();
 
     private final boolean isPrivate;
+    private final TabType type;
     private TabsPanel tabsPanel;
     private final TabsLayoutAdapter tabsAdapter;
 
@@ -37,6 +40,7 @@ public abstract class TabsLayout extends RecyclerView
 
         TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.TabsLayout);
         isPrivate = (a.getInt(R.styleable.TabsLayout_tabs, 0x0) == 1);
+        type = TabType.BROWSING;
         a.recycle();
 
         tabsAdapter = new TabsLayoutAdapter(context, itemViewLayoutResId, isPrivate,
@@ -81,7 +85,6 @@ public abstract class TabsLayout extends RecyclerView
     public void hide() {
         setVisibility(View.GONE);
         Tabs.unregisterOnTabsChangedListener(this);
-        GeckoAppShell.notifyObservers("Tab:Screenshot:Cancel", "");
         tabsAdapter.clear();
     }
 
@@ -96,6 +99,10 @@ public abstract class TabsLayout extends RecyclerView
 
     @Override
     public void onTabChanged(Tab tab, Tabs.TabEvents msg, String data) {
+        if (msg != Tabs.TabEvents.RESTORED && tab.getType() != type) {
+            return;
+        }
+
         switch (msg) {
             case ADDED:
                 final int tabIndex = Integer.parseInt(data);
@@ -149,6 +156,16 @@ public abstract class TabsLayout extends RecyclerView
         Tabs.getInstance().notifyListeners(tab, Tabs.TabEvents.OPENED_FROM_TABS_TRAY);
     }
 
+    @Override
+    public void onItemDismiss(View view) {
+        closeTab(view);
+    }
+
+    @Override
+    public boolean onItemMove(int fromPosition, int toPosition) {
+        return tabsAdapter.moveTab(fromPosition, toPosition);
+    }
+
     /** Updates the selected position in the list so that it will be scrolled to the right place. */
     protected void updateSelectedPosition() {
         final int selected = getSelectedAdapterPosition();
@@ -164,7 +181,7 @@ public abstract class TabsLayout extends RecyclerView
         final Iterable<Tab> allTabs = Tabs.getInstance().getTabsInOrder();
 
         for (final Tab tab : allTabs) {
-            if (tab.isPrivate() == isPrivate) {
+            if (tab.isPrivate() == isPrivate && tab.getType() == type) {
                 tabData.add(tab);
             }
         }
@@ -198,11 +215,6 @@ public abstract class TabsLayout extends RecyclerView
                 Tabs.getInstance().closeTab(tab, false);
             }
         }
-    }
-
-    @Override
-    public void onItemDismiss(View view) {
-        closeTab(view);
     }
 
     @Override

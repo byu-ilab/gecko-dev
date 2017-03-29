@@ -49,7 +49,7 @@ enum Phase : uint8_t {
     PHASE_SWEEP_MARK_GRAY,
     PHASE_SWEEP_MARK_GRAY_WEAK,
     PHASE_FINALIZE_START,
-    PHASE_WEAK_ZONEGROUP_CALLBACK,
+    PHASE_WEAK_ZONES_CALLBACK,
     PHASE_WEAK_COMPARTMENT_CALLBACK,
     PHASE_SWEEP_ATOMS,
     PHASE_SWEEP_COMPARTMENTS,
@@ -477,7 +477,7 @@ struct MOZ_RAII AutoPhase
 
     ~AutoPhase() {
         if (enabled) {
-            // Bug 1309651 - we only record mainthread time (including time
+            // Bug 1309651 - we only record active thread time (including time
             // spent waiting to join with helper threads), but should start
             // recording total work on helper threads sometime by calling
             // endParallelPhase here if task is nonnull.

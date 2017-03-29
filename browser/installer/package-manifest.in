@@ -459,20 +459,19 @@
 @RESPATH@/components/nsContentPrefService.js
 @RESPATH@/components/nsContentDispatchChooser.manifest
 @RESPATH@/components/nsContentDispatchChooser.js
+@RESPATH@/components/nsHandlerService-json.manifest
+@RESPATH@/components/nsHandlerService-json.js
 @RESPATH@/components/nsHandlerService.manifest
 @RESPATH@/components/nsHandlerService.js
 @RESPATH@/components/nsWebHandlerApp.manifest
 @RESPATH@/components/nsWebHandlerApp.js
 @RESPATH@/components/satchel.manifest
 @RESPATH@/components/nsFormAutoComplete.js
-@RESPATH@/components/nsFormHistory.js
 @RESPATH@/components/FormHistoryStartup.js
 @RESPATH@/components/nsInputListAutoComplete.js
 @RESPATH@/components/formautofill.manifest
 @RESPATH@/components/FormAutofillContentService.js
 @RESPATH@/components/FormAutofillStartup.js
-@RESPATH@/components/CSSUnprefixingService.js
-@RESPATH@/components/CSSUnprefixingService.manifest
 @RESPATH@/components/contentAreaDropListener.manifest
 @RESPATH@/components/contentAreaDropListener.js
 @RESPATH@/browser/components/BrowserProfileMigrators.manifest
@@ -523,6 +522,9 @@
 @RESPATH@/components/remotebrowserutils.manifest
 @RESPATH@/components/RemoteWebNavigation.js
 
+@RESPATH@/components/ProcessSelector.js
+@RESPATH@/components/ProcessSelector.manifest
+
 @RESPATH@/components/SlowScriptDebug.manifest
 @RESPATH@/components/SlowScriptDebug.js
 
@@ -549,6 +551,11 @@
 @RESPATH@/components/PresentationControlService.js
 @RESPATH@/components/PresentationDataChannelSessionTransport.js
 @RESPATH@/components/PresentationDataChannelSessionTransport.manifest
+
+#ifdef ENABLE_INTL_API
+@RESPATH@/components/mozIntl.manifest
+@RESPATH@/components/mozIntl.js
+#endif
 
 #if defined(ENABLE_TESTS) && defined(MOZ_DEBUG)
 @RESPATH@/components/TestInterfaceJS.js
@@ -639,6 +646,7 @@
 @RESPATH@/greprefs.js
 @RESPATH@/defaults/autoconfig/prefcalls.js
 @RESPATH@/browser/defaults/permissions
+@RESPATH@/browser/defaults/blocklists
 
 ; Warning: changing the path to channel-prefs.js can cause bugs (Bug 756325)
 ; Technically this is an app pref file, but we are keeping it in the original
@@ -726,16 +734,9 @@
 
 ; For process sandboxing
 #if defined(MOZ_SANDBOX)
-#if defined(XP_WIN)
-#if defined(WOW_HELPER)
-@BINPATH@/wow_helper.exe
-#endif
-#endif
-#endif
-
-#if defined(MOZ_SANDBOX)
 #if defined(XP_LINUX)
 @BINPATH@/@DLL_PREFIX@mozsandbox@DLL_SUFFIX@
+@RESPATH@/components/sandbox.xpt
 #endif
 #endif
 
@@ -773,8 +774,8 @@ bin/libfreebl_32int64_3.so
 @BINPATH@/crashreporter.app/
 #else
 @BINPATH@/crashreporter@BIN_SUFFIX@
-@BINPATH@/minidump-analyzer@BIN_SUFFIX@
 @RESPATH@/crashreporter.ini
+@BINPATH@/minidump-analyzer@BIN_SUFFIX@
 #ifdef XP_UNIX
 @RESPATH@/Throbber-small.gif
 #endif
@@ -784,6 +785,10 @@ bin/libfreebl_32int64_3.so
 @BINPATH@/breakpadinjector.dll
 #endif
 #endif
+
+; [ Ping Sender ]
+;
+@BINPATH@/pingsender@BIN_SUFFIX@
 
 @RESPATH@/components/dom_audiochannel.xpt
 

@@ -6,13 +6,14 @@
 #ifndef mozilla_intl_LocaleService_h__
 #define mozilla_intl_LocaleService_h__
 
-#include "mozilla/StaticPtr.h"
+#include "nsIObserver.h"
 #include "nsString.h"
 #include "nsTArray.h"
 
+#include "mozILocaleService.h"
+
 namespace mozilla {
 namespace intl {
-
 
 /**
  * LocaleService is a manager of language negotiation in Gecko.
@@ -20,16 +21,64 @@ namespace intl {
  * It's intended to be the core place for collecting available and
  * requested languages and negotiating them to produce a fallback
  * chain of locales for the application.
+ *
+ * The terms `Locale ID` and `Language ID` are used slightly differently
+ * by different organizations. Mozilla uses the term `Language ID` to describe
+ * a string that contains information about the language itself, script,
+ * region and variant. For example "en-Latn-US-mac" is a correct Language ID.
+ *
+ * Locale ID contains a Language ID plus a number of extension tags that
+ * contain information that go beyond language inforamation such as
+ * preferred currency, date/time formatting etc.
+ *
+ * An example of a Locale ID is `en-Latn-US-x-hc-h12-ca-gregory`
+ *
+ * At the moment we do not support full extension tag system, but we
+ * try to be specific when naming APIs, so the service is for locales,
+ * but we negotiate between languages etc.
  */
-class LocaleService
+class LocaleService : public mozILocaleService,
+                      public nsIObserver
 {
 public:
+  NS_DECL_ISUPPORTS
+  NS_DECL_NSIOBSERVER
+  NS_DECL_MOZILOCALESERVICE
+
+  /**
+   * List of available language negotiation strategies.
+   *
+   * See the mozILocaleService.idl for detailed description of the
+   * strategies.
+   */
+  enum class LangNegStrategy {
+    Filtering,
+    Matching,
+    Lookup
+  };
+
+  /**
+   * Create (if necessary) and return a raw pointer to the singleton instance.
+   * Use this accessor in C++ code that just wants to call a method on the
+   * instance, but does not need to hold a reference, as in
+   *    nsAutoCString str;
+   *    LocaleService::GetInstance()->GetAppLocaleAsLangTag(str);
+   */
   static LocaleService* GetInstance();
+
+  /**
+   * Return an addRef'd pointer to the singleton instance. This is used by the
+   * XPCOM constructor that exists to support usage from JS.
+   */
+  static already_AddRefed<LocaleService> GetInstanceAddRefed()
+  {
+    return RefPtr<LocaleService>(GetInstance()).forget();
+  }
 
   /**
    * Returns a list of locales that the application should be localized to.
    *
-   * The result is a sorted list of valid locale IDs and it should be
+   * The result is a ordered list of valid locale IDs and it should be
    * used for all APIs that accept list of locales, like ECMA402 and L10n APIs.
    *
    * This API always returns at least one locale.
@@ -37,29 +86,53 @@ public:
    * Example: ["en-US", "de", "pl", "sr-Cyrl", "zh-Hans-HK"]
    *
    * Usage:
-   * nsTArray<nsCString> appLocales;
-   * LocaleService::GetInstance()->GetAppLocales(appLocales);
+   *   nsTArray<nsCString> appLocales;
+   *   LocaleService::GetInstance()->GetAppLocalesAsLangTags(appLocales);
+   *
+   * (See mozILocaleService.idl for a JS-callable version of this.)
    */
-  void GetAppLocales(nsTArray<nsCString>& aRetVal);
+  void GetAppLocalesAsLangTags(nsTArray<nsCString>& aRetVal);
+  void GetAppLocalesAsBCP47(nsTArray<nsCString>& aRetVal);
 
   /**
-   * Returns the best locale that the application should be localized to.
+   * Returns a list of locales that the user requested the app to be
+   * localized to.
    *
-   * The result is a valid locale IDs and it should be
-   * used for all APIs that do not handle language negotiation.
+   * The result is a sorted list of valid locale IDs and it should be
+   * used as a requestedLocales input list for languages negotiation.
    *
-   * Where possible, GetAppLocales should be preferred over this API and
-   * all callsites should handle some form of "best effort" language
-   * negotiation to respect user preferences in case the use case does
-   * not have data for the first locale in the list.
-   *
-   * Example: "zh-Hans-HK"
+   * Example: ["en-US", "de", "pl", "sr-Cyrl", "zh-Hans-HK"]
    *
    * Usage:
-   * nsAutoCString appLocale;
-   * LocaleService::GetInstance()->GetAppLocale(appLocale);
+   *   nsTArray<nsCString> reqLocales;
+   *   LocaleService::GetInstance()->GetRequestedLocales(reqLocales);
+   *
+   * Returns a boolean indicating if the attempt to retrieve prefs
+   * was successful.
+   *
+   * (See mozILocaleService.idl for a JS-callable version of this.)
    */
-  void GetAppLocale(nsACString& aRetVal);
+  bool GetRequestedLocales(nsTArray<nsCString>& aRetVal);
+
+  /**
+   * Returns a list of available locales that can be used to
+   * localize the app.
+   *
+   * The result is an unsorted list of valid locale IDs and it should be
+   * used as a availableLocales input list for languages negotiation.
+   *
+   * Example: ["de", "en-US", "pl", "sr-Cyrl", "zh-Hans-HK"]
+   *
+   * Usage:
+   *   nsTArray<nsCString> availLocales;
+   *   LocaleService::GetInstance()->GetAvailableLocales(availLocales);
+   *
+   * Returns a boolean indicating if the attempt to retrieve at least
+   * one locale was successful.
+   *
+   * (See mozILocaleService.idl for a JS-callable version of this.)
+   */
+  bool GetAvailableLocales(nsTArray<nsCString>& aRetVal);
 
   /**
    * Triggers a refresh of the language negotiation process.
@@ -69,13 +142,82 @@ public:
    */
   void Refresh();
 
-protected:
-  nsTArray<nsCString> mAppLocales;
+  /**
+   * Negotiates the best locales out of an ordered list of requested locales and
+   * a list of available locales.
+   *
+   * Internally it uses the following naming scheme:
+   *
+   *  Requested - locales requested by the user
+   *  Available - locales for which the data is available
+   *  Supported - locales negotiated by the algorithm
+   *
+   * Additionally, if defaultLocale is provided, it adds it to the end of the
+   * result list as a "last resort" locale.
+   *
+   * Strategy is one of the three strategies described at the top of this file.
+   *
+   * The result list is ordered according to the order of the requested locales.
+   *
+   * (See mozILocaleService.idl for a JS-callable version of this.)
+   */
+  bool NegotiateLanguages(const nsTArray<nsCString>& aRequested,
+                          const nsTArray<nsCString>& aAvailable,
+                          const nsACString& aDefaultLocale,
+                          LangNegStrategy aLangNegStrategy,
+                          nsTArray<nsCString>& aRetVal);
 
 private:
-  static StaticAutoPtr<LocaleService> sInstance;
-};
+  /**
+   * Locale object, a BCP47-style tag decomposed into subtags for
+   * matching purposes.
+   *
+   * If constructed with aRange = true, any missing subtags will be
+   * set to "*".
+   */
+  class Locale
+  {
+  public:
+    Locale(const nsCString& aLocale, bool aRange);
 
+    bool Matches(const Locale& aLocale) const;
+
+    void SetVariantRange();
+    void SetRegionRange();
+
+    bool AddLikelySubtags(); // returns false if nothing changed
+
+    const nsCString& AsString() const {
+      return mLocaleStr;
+    }
+
+    bool operator== (const Locale& aOther) {
+      const auto& cmp = nsCaseInsensitiveCStringComparator();
+      return mLanguage.Equals(aOther.mLanguage, cmp) &&
+             mScript.Equals(aOther.mScript, cmp) &&
+             mRegion.Equals(aOther.mRegion, cmp) &&
+             mVariant.Equals(aOther.mVariant, cmp);
+    }
+
+  private:
+    const nsCString& mLocaleStr;
+    nsCString mLanguage;
+    nsCString mScript;
+    nsCString mRegion;
+    nsCString mVariant;
+  };
+
+  void FilterMatches(const nsTArray<nsCString>& aRequested,
+                     const nsTArray<nsCString>& aAvailable,
+                     LangNegStrategy aStrategy,
+                     nsTArray<nsCString>& aRetVal);
+
+  virtual ~LocaleService();
+
+  nsTArray<nsCString> mAppLocales;
+
+  static StaticRefPtr<LocaleService> sInstance;
+};
 } // intl
 } // namespace mozilla
 

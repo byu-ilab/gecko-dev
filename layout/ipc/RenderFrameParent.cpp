@@ -9,9 +9,6 @@
 
 #include "BasicLayers.h"
 #include "gfxPrefs.h"
-#ifdef MOZ_ENABLE_D3D9_LAYER
-# include "LayerManagerD3D9.h"
-#endif //MOZ_ENABLE_D3D9_LAYER
 #include "mozilla/BrowserElementParent.h"
 #include "mozilla/EventForwards.h"  // for Modifiers
 #include "mozilla/ViewportFrame.h"
@@ -34,6 +31,7 @@
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/layers/LayerManagerComposite.h"
 #include "mozilla/layers/CompositorBridgeChild.h"
+#include "mozilla/layers/WebRenderLayerManager.h"
 #include "ClientLayerManager.h"
 #include "FrameLayerBuilder.h"
 
@@ -115,18 +113,12 @@ RenderFrameParent::Init(nsFrameLoader* aFrameLoader)
   mAsyncPanZoomEnabled = lm && lm->AsyncPanZoomEnabled();
 
   TabParent* browser = TabParent::GetFrom(mFrameLoader);
-
-  // Note: we ignore any IPC errors here when talking to the compositor. If
-  // the compositor process has gone away, these connections will automatically
-  // be recreated. However the infrastructure for doing so relies on
-  // RenderFrameParent having successfully initialized, so this function must
-  // succeed in allocating a layer tree id and returning true.
   if (XRE_IsParentProcess()) {
     // Our remote frame will push layers updates to the compositor,
     // and we'll keep an indirect reference to that tree.
     browser->Manager()->AsContentParent()->AllocateLayerTreeId(browser, &mLayersId);
-    if (lm && lm->AsClientLayerManager()) {
-      lm->AsClientLayerManager()->GetRemoteRenderer()->SendNotifyChildCreated(mLayersId);
+    if (lm && lm->GetCompositorBridgeChild()) {
+      lm->GetCompositorBridgeChild()->SendNotifyChildCreated(mLayersId);
     }
   } else if (XRE_IsContentProcess()) {
     ContentChild::GetSingleton()->SendAllocateLayerTreeId(browser->Manager()->ChildID(), browser->GetTabId(), &mLayersId);
@@ -216,8 +208,8 @@ RenderFrameParent::OwnerContentChanged(nsIContent* aContent)
 
   RefPtr<LayerManager> lm = mFrameLoader ? GetFrom(mFrameLoader) : nullptr;
   // Perhaps the document containing this frame currently has no presentation?
-  if (lm && lm->AsClientLayerManager()) {
-    lm->AsClientLayerManager()->GetRemoteRenderer()->SendAdoptChild(mLayersId);
+  if (lm && lm->GetCompositorBridgeChild()) {
+    lm->GetCompositorBridgeChild()->SendAdoptChild(mLayersId);
     FrameLayerBuilder::InvalidateAllLayers(lm);
   }
 }
@@ -288,8 +280,8 @@ RenderFrameParent::GetTextureFactoryIdentifier(TextureFactoryIdentifier* aTextur
 {
   RefPtr<LayerManager> lm = mFrameLoader ? GetFrom(mFrameLoader) : nullptr;
   // Perhaps the document containing this frame currently has no presentation?
-  if (lm && lm->AsClientLayerManager()) {
-    *aTextureFactoryIdentifier = lm->AsClientLayerManager()->GetTextureFactoryIdentifier();
+  if (lm) {
+    *aTextureFactoryIdentifier = lm->GetTextureFactoryIdentifier();
   } else {
     *aTextureFactoryIdentifier = TextureFactoryIdentifier();
   }
@@ -323,12 +315,11 @@ RenderFrameParent::EnsureLayersConnected()
     return;
   }
 
-  ClientLayerManager* client = lm->AsClientLayerManager();
-  if (!client) {
+  if (!lm->GetCompositorBridgeChild()) {
     return;
   }
 
-  client->GetRemoteRenderer()->SendNotifyChildRecreated(mLayersId);
+  lm->GetCompositorBridgeChild()->SendNotifyChildRecreated(mLayersId);
 }
 
 } // namespace layout

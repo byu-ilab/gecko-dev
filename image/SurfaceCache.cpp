@@ -197,10 +197,12 @@ public:
       // for surfaces with PlaybackType::eAnimated.)
       size_t heap = 0;
       size_t nonHeap = 0;
+      size_t handles = 0;
       aCachedSurface->mProvider
-        ->AddSizeOfExcludingThis(mMallocSizeOf, heap, nonHeap);
+        ->AddSizeOfExcludingThis(mMallocSizeOf, heap, nonHeap, handles);
       counter.Values().SetDecodedHeap(heap);
       counter.Values().SetDecodedNonHeap(nonHeap);
+      counter.Values().SetSharedHandles(handles);
 
       mCounters.AppendElement(counter);
     }
@@ -500,7 +502,7 @@ public:
 
     // If the surface was not a placeholder, tell its image that we discarded it.
     if (!aSurface->IsPlaceholder()) {
-      static_cast<Image*>(imageKey)->OnSurfaceDiscarded();
+      static_cast<Image*>(imageKey)->OnSurfaceDiscarded(aSurface->GetSurfaceKey());
     }
 
     StopTracking(aSurface);
@@ -696,7 +698,7 @@ public:
     }
 
     cache->SetLocked(false);
-    DoUnlockSurfaces(WrapNotNull(cache));
+    DoUnlockSurfaces(WrapNotNull(cache), /* aStaticOnly = */ false);
   }
 
   void UnlockEntries(const ImageKey aImageKey)
@@ -708,7 +710,8 @@ public:
 
     // (Note that we *don't* unlock the per-image cache here; that's the
     // difference between this and UnlockImage.)
-    DoUnlockSurfaces(WrapNotNull(cache));
+    DoUnlockSurfaces(WrapNotNull(cache),
+      /* aStaticOnly = */ !gfxPrefs::ImageMemAnimatedDiscardable());
   }
 
   void RemoveImage(const ImageKey aImageKey)
@@ -854,12 +857,15 @@ private:
     }
   }
 
-  void DoUnlockSurfaces(NotNull<ImageSurfaceCache*> aCache)
+  void DoUnlockSurfaces(NotNull<ImageSurfaceCache*> aCache, bool aStaticOnly)
   {
     // Unlock all the surfaces the per-image cache is holding.
     for (auto iter = aCache->ConstIter(); !iter.Done(); iter.Next()) {
       NotNull<CachedSurface*> surface = WrapNotNull(iter.UserData());
       if (surface->IsPlaceholder() || !surface->IsLocked()) {
+        continue;
+      }
+      if (aStaticOnly && surface->GetSurfaceKey().Playback() != PlaybackType::eStatic) {
         continue;
       }
       StopTracking(surface);

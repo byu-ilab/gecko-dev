@@ -454,7 +454,8 @@ const Class StringObject::class_ = {
 static MOZ_ALWAYS_INLINE JSString*
 ToStringForStringFunction(JSContext* cx, HandleValue thisv)
 {
-    JS_CHECK_RECURSION(cx, return nullptr);
+    if (!CheckRecursionLimit(cx))
+        return nullptr;
 
     if (thisv.isString())
         return thisv.toString();
@@ -1459,7 +1460,8 @@ class StringSegmentRange
 {
     // If malloc() shows up in any profiles from this vector, we can add a new
     // StackAllocPolicy which stashes a reusable freed-at-gc buffer in the cx.
-    Rooted<StringVector> stack;
+    using StackVector = JS::GCVector<JSString*, 16>;
+    Rooted<StackVector> stack;
     RootedLinearString cur;
 
     bool settle(JSString* str) {
@@ -1475,7 +1477,7 @@ class StringSegmentRange
 
   public:
     explicit StringSegmentRange(JSContext* cx)
-      : stack(cx, StringVector(cx)), cur(cx)
+      : stack(cx, StackVector(cx)), cur(cx)
     {}
 
     MOZ_MUST_USE bool init(JSString* str) {
@@ -3145,7 +3147,8 @@ SymbolToSource(JSContext* cx, Symbol* symbol)
 JSString*
 js::ValueToSource(JSContext* cx, HandleValue v)
 {
-    JS_CHECK_RECURSION(cx, return nullptr);
+    if (!CheckRecursionLimit(cx))
+        return nullptr;
     assertSameCompartment(cx, v);
 
     if (v.isUndefined())
@@ -4019,7 +4022,7 @@ js::PutEscapedStringImpl(char* buffer, size_t bufferSize, GenericPrinter* out, c
                 buffer = nullptr;
             }
         } else if (out) {
-            if (out->put(&c, 1) < 0)
+            if (!out->put(&c, 1))
                 return size_t(-1);
         }
         n++;

@@ -3,6 +3,10 @@
 module.exports = { // eslint-disable-line no-undef
   "extends": "../../.eslintrc.js",
 
+  "env": {
+    "browser": false,
+  },
+
   "globals": {
     "Cc": true,
     "Ci": true,
@@ -162,6 +166,9 @@ module.exports = { // eslint-disable-line no-undef
 
     // No single if block inside an else block
     "no-lonely-if": "warn",
+
+    // No mixing different operators without parens
+    "no-mixed-operators": ["error", {"groups": [["&&", "||"], ["==", "!=", "===", "!==", ">", ">=", "<", "<="], ["in", "instanceof"]]}],
 
     // No mixing spaces and tabs in indent
     "no-mixed-spaces-and-tabs": ["error", "smart-tabs"],

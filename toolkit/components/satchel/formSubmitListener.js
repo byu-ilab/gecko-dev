@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* eslint-env mozilla/frame-script */
+
 (function() {
 
 var Cc = Components.classes;
@@ -12,14 +14,14 @@ Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
 
 var satchelFormListener = {
-    QueryInterface : XPCOMUtils.generateQI([Ci.nsIFormSubmitObserver,
+    QueryInterface: XPCOMUtils.generateQI([Ci.nsIFormSubmitObserver,
                                             Ci.nsIDOMEventListener,
                                             Ci.nsIObserver,
                                             Ci.nsISupportsWeakReference]),
 
-    debug          : true,
-    enabled        : true,
-    saveHttpsForms : true,
+    debug: true,
+    enabled: true,
+    saveHttpsForms: true,
 
     init() {
         Services.obs.addObserver(this, "earlyformsubmit", false);

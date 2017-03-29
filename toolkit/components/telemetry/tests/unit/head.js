@@ -6,7 +6,6 @@ var { classes: Cc, utils: Cu, interfaces: Ci, results: Cr } = Components;
 Cu.import("resource://gre/modules/TelemetryController.jsm", this);
 Cu.import("resource://gre/modules/Services.jsm", this);
 Cu.import("resource://gre/modules/PromiseUtils.jsm", this);
-Cu.import("resource://gre/modules/Task.jsm", this);
 Cu.import("resource://gre/modules/FileUtils.jsm", this);
 Cu.import("resource://gre/modules/XPCOMUtils.jsm", this);
 Cu.import("resource://testing-common/httpd.js", this);
@@ -96,14 +95,14 @@ const PingServer = {
     return this.promiseNextRequest().then(request => decodeRequestPayload(request));
   },
 
-  promiseNextRequests: Task.async(function*(count) {
+  async promiseNextRequests(count) {
     let results = [];
     for (let i = 0; i < count; ++i) {
-      results.push(yield this.promiseNextRequest());
+      results.push(await this.promiseNextRequest());
     }
 
     return results;
-  }),
+  },
 
   promiseNextPings(count) {
     return this.promiseNextRequests(count).then(requests => {
@@ -122,7 +121,8 @@ function decodeRequestPayload(request) {
   let payload = null;
   let decoder = Cc["@mozilla.org/dom/json;1"].createInstance(Ci.nsIJSON)
 
-  if (request.getHeader("content-encoding") == "gzip") {
+  if (request.hasHeader("content-encoding") &&
+      request.getHeader("content-encoding") == "gzip") {
     let observer = {
       buffer: "",
       onStreamComplete(loader, context, status, length, result) {
@@ -234,7 +234,7 @@ function fakeMonotonicNow(ms) {
 // Fake the timeout functions for TelemetryController sending.
 function fakePingSendTimer(set, clear) {
   let module = Cu.import("resource://gre/modules/TelemetrySend.jsm", {});
-  let obj = Cu.cloneInto({set, clear}, module, {cloneFunctions:true});
+  let obj = Cu.cloneInto({set, clear}, module, {cloneFunctions: true});
   module.Policy.setSchedulerTickTimeout = obj.set;
   module.Policy.clearSchedulerTickTimeout = obj.clear;
 }
@@ -296,6 +296,7 @@ function setEmptyPrefWatchlist() {
     Cu.import("resource://gre/modules/TelemetryEnvironment.jsm").TelemetryEnvironment;
   return TelemetryEnvironment.onInitialized().then(() => {
     TelemetryEnvironment.testWatchPreferences(new Map());
+
   });
 }
 

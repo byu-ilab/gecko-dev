@@ -1717,6 +1717,20 @@ exports.CSS_PROPERTIES = {
       "unset"
     ]
   },
+  "-webkit-appearance": {
+    "isInherited": false,
+    "subproperties": [
+      "appearance"
+    ],
+    "supports": [],
+    "values": [
+      "auto",
+      "inherit",
+      "initial",
+      "none",
+      "unset"
+    ]
+  },
   "-webkit-backface-visibility": {
     "isInherited": false,
     "subproperties": [
@@ -2787,6 +2801,7 @@ exports.CSS_PROPERTIES = {
       "animation-play-state",
       "animation-timing-function",
       "-moz-appearance",
+      "appearance",
       "backface-visibility",
       "background-attachment",
       "background-blend-mode",
@@ -2865,6 +2880,7 @@ exports.CSS_PROPERTIES = {
       "column-rule-color",
       "column-rule-style",
       "column-rule-width",
+      "column-span",
       "column-width",
       "contain",
       "content",
@@ -3045,6 +3061,7 @@ exports.CSS_PROPERTIES = {
       "text-emphasis-style",
       "-webkit-text-fill-color",
       "text-indent",
+      "text-justify",
       "text-orientation",
       "text-overflow",
       "text-rendering",
@@ -3222,6 +3239,7 @@ exports.CSS_PROPERTIES = {
       "dialog",
       "difference",
       "disabled",
+      "distribute",
       "dotted",
       "double",
       "drag",
@@ -3282,6 +3300,8 @@ exports.CSS_PROPERTIES = {
       "inline-table",
       "inset",
       "inside",
+      "inter-character",
+      "inter-word",
       "intersect",
       "isolate",
       "italic",
@@ -3708,6 +3728,20 @@ exports.CSS_PROPERTIES = {
       "step-end",
       "step-start",
       "steps",
+      "unset"
+    ]
+  },
+  "appearance": {
+    "isInherited": false,
+    "subproperties": [
+      "appearance"
+    ],
+    "supports": [],
+    "values": [
+      "auto",
+      "inherit",
+      "initial",
+      "none",
       "unset"
     ]
   },
@@ -5964,7 +5998,6 @@ exports.CSS_PROPERTIES = {
       "font-feature-settings",
       "font-language-override",
       "font-kerning",
-      "font-synthesis",
       "font-variant-alternates",
       "font-variant-caps",
       "font-variant-east-asian",
@@ -8811,6 +8844,23 @@ exports.CSS_PROPERTIES = {
       "unset"
     ]
   },
+  "text-justify": {
+    "isInherited": true,
+    "subproperties": [
+      "text-justify"
+    ],
+    "supports": [],
+    "values": [
+      "auto",
+      "distribute",
+      "inherit",
+      "initial",
+      "inter-character",
+      "inter-word",
+      "none",
+      "unset"
+    ]
+  },
   "text-orientation": {
     "isInherited": true,
     "subproperties": [
@@ -9078,9 +9128,6 @@ exports.CSS_PROPERTIES = {
     ],
     "supports": [],
     "values": [
-      "-moz-isolate",
-      "-moz-isolate-override",
-      "-moz-plaintext",
       "bidi-override",
       "embed",
       "inherit",
@@ -9318,6 +9365,14 @@ exports.PREFERENCES = [
     "layout.css.all-shorthand.enabled"
   ],
   [
+    "-moz-appearance",
+    "layout.css.moz-appearance.enabled"
+  ],
+  [
+    "appearance",
+    "layout.css.appearance.enabled"
+  ],
+  [
     "background-blend-mode",
     "layout.css.background-blend-mode.enabled"
   ],
@@ -9328,6 +9383,10 @@ exports.PREFERENCES = [
   [
     "color-adjust",
     "layout.css.color-adjust.enabled"
+  ],
+  [
+    "column-span",
+    "layout.css.column-span.enabled"
   ],
   [
     "contain",
@@ -9426,14 +9485,6 @@ exports.PREFERENCES = [
     "layout.css.mix-blend-mode.enabled"
   ],
   [
-    "object-fit",
-    "layout.css.object-fit-and-position.enabled"
-  ],
-  [
-    "object-position",
-    "layout.css.object-fit-and-position.enabled"
-  ],
-  [
     "-moz-osx-font-smoothing",
     "layout.css.osx-font-smoothing.enabled"
   ],
@@ -9488,6 +9539,10 @@ exports.PREFERENCES = [
   [
     "-webkit-text-fill-color",
     "layout.css.prefixes.webkit"
+  ],
+  [
+    "text-justify",
+    "layout.css.text-justify.enabled"
   ],
   [
     "-webkit-text-stroke",
@@ -9640,6 +9695,10 @@ exports.PREFERENCES = [
   [
     "-webkit-animation-timing-function",
     "layout.css.prefixes.webkit"
+  ],
+  [
+    "-webkit-appearance",
+    "layout.css.appearance.enabled"
   ],
   [
     "-webkit-filter",

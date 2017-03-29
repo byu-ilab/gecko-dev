@@ -116,7 +116,7 @@ private:
   void OnMetadataRead(MetadataHolder* aMetadata);
   void OnMetadataNotRead(const MediaResult& aError);
   void RequestSample();
-  void SampleDecoded(MediaData* aData);
+  void SampleDecoded(AudioData* aData);
   void SampleNotDecoded(const MediaResult& aError);
   void FinishDecode();
   void AllocateBuffer();
@@ -141,7 +141,7 @@ private:
   RefPtr<BufferDecoder> mBufferDecoder;
   RefPtr<MediaDecoderReader> mDecoderReader;
   MediaInfo mMediaInfo;
-  MediaQueue<MediaData> mAudioQueue;
+  MediaQueue<AudioData> mAudioQueue;
   bool mFirstFrameDecoded;
 };
 
@@ -289,7 +289,7 @@ MediaDecodeTask::OnMetadataRead(MetadataHolder* aMetadata)
     MOZ_LOG(gMediaDecoderLog,
             LogLevel::Debug,
             ("Telemetry (WebAudio) MEDIA_CODEC_USED= '%s'", codec.get()));
-    Telemetry::Accumulate(Telemetry::ID::MEDIA_CODEC_USED, codec);
+    Telemetry::Accumulate(Telemetry::HistogramID::MEDIA_CODEC_USED, codec);
   });
   // Non-DocGroup version of AbstractThread::MainThread is fine for Telemetry.
   AbstractThread::MainThread()->Dispatch(task.forget());
@@ -313,7 +313,7 @@ MediaDecodeTask::RequestSample()
 }
 
 void
-MediaDecodeTask::SampleDecoded(MediaData* aData)
+MediaDecodeTask::SampleDecoded(AudioData* aData)
 {
   MOZ_ASSERT(!NS_IsMainThread());
   mAudioQueue.Push(aData);
@@ -379,9 +379,8 @@ MediaDecodeTask::FinishDecode()
     return;
   }
 
-  RefPtr<MediaData> mediaData;
-  while ((mediaData = mAudioQueue.PopFront())) {
-    RefPtr<AudioData> audioData = mediaData->As<AudioData>();
+  RefPtr<AudioData> audioData;
+  while ((audioData = mAudioQueue.PopFront())) {
     audioData->EnsureAudioBuffer(); // could lead to a copy :(
     AudioDataValue* bufferData = static_cast<AudioDataValue*>
       (audioData->mAudioBuffer->Data());
@@ -640,4 +639,3 @@ WebAudioDecodeJob::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 }
 
 } // namespace mozilla
-

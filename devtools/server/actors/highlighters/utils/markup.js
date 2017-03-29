@@ -5,7 +5,7 @@
 "use strict";
 
 const { Cc, Ci, Cu } = require("chrome");
-const { getCurrentZoom,
+const { getCurrentZoom, getWindowDimensions,
   getRootBindingParent } = require("devtools/shared/layout/utils");
 const { on, emit } = require("sdk/event/core");
 
@@ -253,13 +253,7 @@ function CanvasFrameAnonymousContentHelper(highlighterEnv, nodeBuilder) {
 
 CanvasFrameAnonymousContentHelper.prototype = {
   destroy: function () {
-    try {
-      let doc = this.anonymousContentDocument;
-      doc.removeAnonymousContent(this._content);
-    } catch (e) {
-      // If the current window isn't the one the content was inserted into, this
-      // will fail, but that's fine.
-    }
+    this._remove();
     this.highlighterEnv.off("window-ready", this._onWindowReady);
     this.highlighterEnv = this.nodeBuilder = this._content = null;
     this.anonymousContentDocument = null;
@@ -306,8 +300,26 @@ CanvasFrameAnonymousContentHelper.prototype = {
     this._content = doc.insertAnonymousContent(node);
   },
 
+  _remove() {
+    try {
+      let doc = this.anonymousContentDocument;
+      doc.removeAnonymousContent(this._content);
+    } catch (e) {
+      // If the current window isn't the one the content was inserted into, this
+      // will fail, but that's fine.
+    }
+  },
+
+  /**
+   * The "window-ready" event can be triggered when:
+   *   - a new window is created
+   *   - a window is unfrozen from bfcache
+   *   - when first attaching to a page
+   *   - when swapping frame loaders (moving tabs, toggling RDM)
+   */
   _onWindowReady: function (e, {isTopLevel}) {
     if (isTopLevel) {
+      this._remove();
       this._removeAllListeners();
       this._insert();
       this.anonymousContentDocument = this.highlighterEnv.document;
@@ -466,7 +478,7 @@ CanvasFrameAnonymousContentHelper.prototype = {
   },
 
   _removeAllListeners: function () {
-    if (this.highlighterEnv) {
+    if (this.highlighterEnv && this.highlighterEnv.pageListenerTarget) {
       let target = this.highlighterEnv.pageListenerTarget;
       for (let [type] of this.listeners) {
         target.removeEventListener(type, this, true);
@@ -529,14 +541,23 @@ CanvasFrameAnonymousContentHelper.prototype = {
    * @param {String} id The ID of the root element inserted with this API.
    */
   scaleRootElement: function (node, id) {
+    let boundaryWindow = this.highlighterEnv.window;
     let zoom = getCurrentZoom(node);
-    let value = "position:absolute;width:100%;height:100%;";
+    // Hide the root element and force the reflow in order to get the proper window's
+    // dimensions without increasing them.
+    this.setAttributeForElement(id, "style", "display: none");
+    node.offsetWidth;
+
+    let { width, height } = getWindowDimensions(boundaryWindow);
+    let value = "";
 
     if (zoom !== 1) {
-      value = "position:absolute;";
-      value += "transform-origin:top left;transform:scale(" + (1 / zoom) + ");";
-      value += "width:" + (100 * zoom) + "%;height:" + (100 * zoom) + "%;";
+      value = `transform-origin:top left; transform:scale(${1 / zoom}); `;
+      width *= zoom;
+      height *= zoom;
     }
+
+    value += `position:absolute; width:${width}px;height:${height}px; overflow:hidden`;
 
     this.setAttributeForElement(id, "style", value);
   }

@@ -84,8 +84,8 @@ class ReftestRunner(MozbuildObject):
 
         if args.suite == "jstestbrowser":
             args.extraProfileFiles.append(os.path.join(self.topobjdir, "dist",
-                                                            "test-stage", "jsreftest",
-                                                            "tests", "user.js"))
+                                                       "test-stage", "jsreftest",
+                                                       "tests", "user.js"))
 
         self.log_manager.enable_unstructured()
         try:
@@ -134,7 +134,6 @@ class ReftestRunner(MozbuildObject):
             args.app = self.substs["ANDROID_PACKAGE_NAME"]
         if not args.utilityPath:
             args.utilityPath = args.xrePath
-        args.dm_trans = "adb"
         args.ignoreWindowSize = True
         args.printDeviceInfo = False
 

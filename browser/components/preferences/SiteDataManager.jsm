@@ -83,7 +83,7 @@ this.SiteDataManager = {
       promises.push(new Promise(resolve => {
         let callback = {
           onUsageResult(request) {
-            site.quotaUsage = request.usage;
+            site.quotaUsage = request.result.usage;
             resolve();
           }
         };
@@ -250,6 +250,7 @@ this.SiteDataManager = {
 
   isPrivateCookie(cookie) {
     let { userContextId } = cookie.originAttributes;
-    return userContextId && !ContextualIdentityService.getIdentityFromId(userContextId).public;
+    // A private cookie is when its userContextId points to a private identity.
+    return userContextId && !ContextualIdentityService.getPublicIdentityFromId(userContextId);
   }
 };

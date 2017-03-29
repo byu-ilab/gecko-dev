@@ -31,6 +31,7 @@
 #include "jsobjinlines.h"
 #include "jsscriptinlines.h"
 
+#include "gc/Nursery-inl.h"
 #include "vm/EnvironmentObject-inl.h"
 #include "vm/NativeObject-inl.h"
 
@@ -169,7 +170,7 @@ JS_SetCompartmentPrincipals(JSCompartment* compartment, JSPrincipals* principals
 
     // Any compartment with the trusted principals -- and there can be
     // multiple -- is a system compartment.
-    const JSPrincipals* trusted = compartment->runtimeFromMainThread()->trustedPrincipals();
+    const JSPrincipals* trusted = compartment->runtimeFromActiveCooperatingThread()->trustedPrincipals();
     bool isSystem = principals && principals == trusted;
 
     // Clear out the old principals, if any.
@@ -377,6 +378,12 @@ js::AssertSameCompartment(JSContext* cx, JSObject* obj)
     assertSameCompartment(cx, obj);
 }
 
+JS_FRIEND_API(void)
+js::AssertSameCompartment(JSContext* cx, JS::HandleValue v)
+{
+    assertSameCompartment(cx, v);
+}
+
 #ifdef DEBUG
 JS_FRIEND_API(void)
 js::AssertSameCompartment(JSObject* objA, JSObject* objB)
@@ -390,7 +397,7 @@ js::NotifyAnimationActivity(JSObject* obj)
 {
     int64_t timeNow = PRMJ_Now();
     obj->compartment()->lastAnimationTime = timeNow;
-    obj->runtimeFromMainThread()->lastAnimationTime = timeNow;
+    obj->runtimeFromActiveCooperatingThread()->lastAnimationTime = timeNow;
 }
 
 JS_FRIEND_API(uint32_t)
@@ -1165,7 +1172,7 @@ void
 js::DumpHeap(JSContext* cx, FILE* fp, js::DumpHeapNurseryBehaviour nurseryBehaviour)
 {
     if (nurseryBehaviour == js::CollectNurseryBeforeDump)
-        cx->runtime()->zoneGroupFromMainThread()->evictNursery(JS::gcreason::API);
+        EvictAllNurseries(cx->runtime(), JS::gcreason::API);
 
     DumpHeapTracer dtrc(fp, cx);
 
@@ -1183,11 +1190,11 @@ js::DumpHeap(JSContext* cx, FILE* fp, js::DumpHeapNurseryBehaviour nurseryBehavi
     fprintf(dtrc.output, "==========\n");
 
     dtrc.prefix = "> ";
-    IterateZonesCompartmentsArenasCells(cx, &dtrc,
-                                        DumpHeapVisitZone,
-                                        DumpHeapVisitCompartment,
-                                        DumpHeapVisitArena,
-                                        DumpHeapVisitCell);
+    IterateHeapUnbarriered(cx, &dtrc,
+                                                   DumpHeapVisitZone,
+                                                   DumpHeapVisitCompartment,
+                                                   DumpHeapVisitArena,
+                                                   DumpHeapVisitCell);
 
     fflush(dtrc.output);
 }
@@ -1222,8 +1229,8 @@ js::GetAnyCompartmentInZone(JS::Zone* zone)
 void
 JS::ObjectPtr::finalize(JSRuntime* rt)
 {
-    if (IsIncrementalBarrierNeeded(rt->contextFromMainThread()))
-        IncrementalObjectBarrier(value);
+    if (IsIncrementalBarrierNeeded(rt->activeContextFromOwnThread()))
+        IncrementalPreWriteBarrier(value);
     value = nullptr;
 }
 
@@ -1461,4 +1468,16 @@ AutoAssertNoContentJS::AutoAssertNoContentJS(JSContext* cx)
 AutoAssertNoContentJS::~AutoAssertNoContentJS()
 {
     context_->runtime()->allowContentJS_ = prevAllowContentJS_;
+}
+
+JS_FRIEND_API(void)
+js::EnableAccessValidation(JSContext* cx, bool enabled)
+{
+    cx->enableAccessValidation = enabled;
+}
+
+JS_FRIEND_API(void)
+js::SetCompartmentValidAccessPtr(JSContext* cx, JS::HandleObject global, bool* accessp)
+{
+    global->compartment()->setValidAccessPtr(accessp);
 }

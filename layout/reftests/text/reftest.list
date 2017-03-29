@@ -316,6 +316,10 @@ HTTP(..) == graphite-surrogate-selection.html graphite-surrogate-selection-ref.h
 
 == auto-hyphenation-transformed-1.html auto-hyphenation-transformed-1-ref.html
 
+== hyphenation-control-1.html hyphenation-control-1-ref.html
+== hyphenation-control-2.html hyphenation-control-2-ref.html
+== hyphenation-control-3.html hyphenation-control-3-ref.html
+
 # osx-font-smoothing - with and without subpixel AA, only under OSX
 fails-if(!cocoaWidget) != osx-font-smoothing.html osx-font-smoothing-ref.html
 fails-if(!cocoaWidget) != osx-font-smoothing-2.html osx-font-smoothing-2-notref.html
@@ -342,3 +346,10 @@ HTTP(..) == space-font-1.html space-font-1-ref.html
 # handling of highly negative letter-spacing and intrinsic width
 == negative-letter-spacing-1.html negative-letter-spacing-1-ref.html
 == segment-break-transformation-1.html segment-break-transformation-1-ref.html
+
+# color glyphs, opacity, and RTL runs - bug 1318539
+== color-opacity-rtl-1.html color-opacity-rtl-1-ref.html
+== color-opacity-rtl-2.html color-opacity-rtl-2-ref.html
+
+== letter-spacing-nolig-1.html letter-spacing-nolig-1-ref.html
+HTTP(..) == letter-spacing-nolig-2.html letter-spacing-nolig-2.html

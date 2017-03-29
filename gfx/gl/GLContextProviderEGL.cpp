@@ -51,6 +51,7 @@
 #include "GLLibraryEGL.h"
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/layers/CompositorOptions.h"
 #include "mozilla/widget/CompositorWidget.h"
 #include "nsDebug.h"
 #include "nsIWidget.h"
@@ -83,7 +84,7 @@ CreateConfig(EGLConfig* aConfig);
 #define EGL_ATTRIBS_LIST_SAFE_TERMINATION_WORKING_AROUND_BUGS \
      LOCAL_EGL_NONE, 0, 0, 0
 
-static EGLint gTerminationAttribs[] = {
+static EGLint kTerminationAttribs[] = {
     EGL_ATTRIBS_LIST_SAFE_TERMINATION_WORKING_AROUND_BUGS
 };
 
@@ -149,14 +150,16 @@ CreateSurfaceFromNativeWindow(EGLNativeWindowType window, const EGLConfig& confi
  */
 class GLContextEGLFactory {
 public:
-    static already_AddRefed<GLContext> Create(EGLNativeWindowType aWindow);
+    static already_AddRefed<GLContext> Create(EGLNativeWindowType aWindow,
+                                              bool aWebRender);
 private:
     GLContextEGLFactory(){}
     ~GLContextEGLFactory(){}
 };
 
 already_AddRefed<GLContext>
-GLContextEGLFactory::Create(EGLNativeWindowType aWindow)
+GLContextEGLFactory::Create(EGLNativeWindowType aWindow,
+                            bool aWebRender)
 {
     MOZ_ASSERT(aWindow);
     nsCString discardFailureId;
@@ -180,9 +183,12 @@ GLContextEGLFactory::Create(EGLNativeWindowType aWindow)
         return nullptr;
     }
 
+    CreateContextFlags flags = CreateContextFlags::NONE;
+    if (aWebRender) {
+        flags |= CreateContextFlags::PREFER_ES3;
+    }
     SurfaceCaps caps = SurfaceCaps::Any();
-    RefPtr<GLContextEGL> gl = GLContextEGL::CreateGLContext(CreateContextFlags::NONE,
-                                                            caps, nullptr, false, config,
+    RefPtr<GLContextEGL> gl = GLContextEGL::CreateGLContext(flags, caps, false, config,
                                                             surface, &discardFailureId);
     if (!gl) {
         MOZ_CRASH("GFX: Failed to create EGLContext!\n");
@@ -197,9 +203,9 @@ GLContextEGLFactory::Create(EGLNativeWindowType aWindow)
 }
 
 GLContextEGL::GLContextEGL(CreateContextFlags flags, const SurfaceCaps& caps,
-                           GLContext* shareContext, bool isOffscreen, EGLConfig config,
-                           EGLSurface surface, EGLContext context)
-    : GLContext(flags, caps, shareContext, isOffscreen)
+                           bool isOffscreen, EGLConfig config, EGLSurface surface,
+                           EGLContext context)
+    : GLContext(flags, caps, nullptr, isOffscreen)
     , mConfig(config)
     , mSurface(surface)
     , mContext(context)
@@ -212,9 +218,6 @@ GLContextEGL::GLContextEGL(CreateContextFlags flags, const SurfaceCaps& caps,
     , mShareWithEGLImage(false)
     , mOwnsContext(true)
 {
-    // any EGL contexts will always be GLESv2
-    SetProfileVersion(ContextProfile::OpenGLES, 200);
-
 #ifdef DEBUG
     printf_stderr("Initializing context %p surface %p on display %p\n", mContext, mSurface, EGL_DISPLAY());
 #endif
@@ -415,7 +418,7 @@ GLContextEGL::ReleaseSurface() {
 bool
 GLContextEGL::SetupLookupFunction()
 {
-    mLookupFunc = (PlatformLookupFunction)sEGLLibrary.mSymbols.fGetProcAddress;
+    mLookupFunc = sEGLLibrary.GetLookupFunction();
     return true;
 }
 
@@ -460,7 +463,6 @@ GLContextEGL::HoldSurface(gfxASurface* aSurf) {
 already_AddRefed<GLContextEGL>
 GLContextEGL::CreateGLContext(CreateContextFlags flags,
                 const SurfaceCaps& caps,
-                GLContextEGL* shareContext,
                 bool isOffscreen,
                 EGLConfig config,
                 EGLSurface surface,
@@ -472,45 +474,72 @@ GLContextEGL::CreateGLContext(CreateContextFlags flags,
         return nullptr;
     }
 
-    EGLContext eglShareContext = shareContext ? shareContext->mContext
-                                              : EGL_NO_CONTEXT;
-
-    nsTArray<EGLint> contextAttribs;
-
-    contextAttribs.AppendElement(LOCAL_EGL_CONTEXT_CLIENT_VERSION);
-    if (flags & CreateContextFlags::PREFER_ES3)
-        contextAttribs.AppendElement(3);
-    else
-        contextAttribs.AppendElement(2);
-
-    if (sEGLLibrary.HasRobustness()) {
-//    contextAttribs.AppendElement(LOCAL_EGL_CONTEXT_ROBUST_ACCESS_EXT);
-//    contextAttribs.AppendElement(LOCAL_EGL_TRUE);
+    std::vector<EGLint> required_attribs;
+    required_attribs.push_back(LOCAL_EGL_CONTEXT_CLIENT_VERSION);
+    if (flags & CreateContextFlags::PREFER_ES3) {
+        required_attribs.push_back(3);
+    } else {
+        required_attribs.push_back(2);
     }
 
-    for (size_t i = 0; i < MOZ_ARRAY_LENGTH(gTerminationAttribs); i++) {
-      contextAttribs.AppendElement(gTerminationAttribs[i]);
+    std::vector<EGLint> robustness_attribs;
+    std::vector<EGLint> rbab_attribs; // RBAB: Robust Buffer Access Behavior
+    if (flags & CreateContextFlags::PREFER_ROBUSTNESS) {
+        if (sEGLLibrary.IsExtensionSupported(GLLibraryEGL::EXT_create_context_robustness)) {
+            robustness_attribs = required_attribs;
+            robustness_attribs.push_back(LOCAL_EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT);
+            robustness_attribs.push_back(LOCAL_EGL_LOSE_CONTEXT_ON_RESET_EXT);
+            // Skip EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, since it doesn't help us.
+        }
+
+        if (sEGLLibrary.IsExtensionSupported(GLLibraryEGL::KHR_create_context)) {
+            rbab_attribs = required_attribs;
+            rbab_attribs.push_back(LOCAL_EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_KHR);
+            rbab_attribs.push_back(LOCAL_EGL_LOSE_CONTEXT_ON_RESET_KHR);
+            rbab_attribs.push_back(LOCAL_EGL_CONTEXT_FLAGS_KHR);
+            rbab_attribs.push_back(LOCAL_EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR);
+        }
     }
 
-    EGLContext context = sEGLLibrary.fCreateContext(EGL_DISPLAY(),
-                                                    config,
-                                                    eglShareContext,
-                                                    contextAttribs.Elements());
-    if (!context && shareContext) {
-        shareContext = nullptr;
-        context = sEGLLibrary.fCreateContext(EGL_DISPLAY(), config, EGL_NO_CONTEXT,
-                                             contextAttribs.Elements());
-    }
-    if (!context) {
+    const auto fnCreate = [&](const std::vector<EGLint>& attribs) {
+        auto terminated_attribs = attribs;
+
+        for (const auto& cur : kTerminationAttribs) {
+            terminated_attribs.push_back(cur);
+        }
+
+        return sEGLLibrary.fCreateContext(EGL_DISPLAY(), config, EGL_NO_CONTEXT,
+                                          terminated_attribs.data());
+    };
+
+    EGLContext context;
+    do {
+        if (rbab_attribs.size()) {
+            context = fnCreate(rbab_attribs);
+            if (context)
+                break;
+            NS_WARNING("Failed to create EGLContext with rbab_attribs");
+        }
+
+        if (robustness_attribs.size()) {
+            context = fnCreate(robustness_attribs);
+            if (context)
+                break;
+            NS_WARNING("Failed to create EGLContext with robustness_attribs");
+        }
+
+        context = fnCreate(required_attribs);
+        if (context)
+            break;
+        NS_WARNING("Failed to create EGLContext with required_attribs");
+
         *out_failureId = NS_LITERAL_CSTRING("FEATURE_FAILURE_EGL_CREATE");
-        NS_WARNING("Failed to create EGLContext!");
         return nullptr;
-    }
+    } while (false);
+    MOZ_ASSERT(context);
 
-    RefPtr<GLContextEGL> glContext = new GLContextEGL(flags, caps, shareContext,
-                                                      isOffscreen, config, surface,
-                                                      context);
-
+    RefPtr<GLContextEGL> glContext = new GLContextEGL(flags, caps, isOffscreen, config,
+                                                      surface, context);
     if (!glContext->Init()) {
         *out_failureId = NS_LITERAL_CSTRING("FEATURE_FAILURE_EGL_INIT");
         return nullptr;
@@ -540,8 +569,8 @@ TRY_AGAIN_POWER_OF_TWO:
         pbattrs.AppendElement(bindToTextureFormat);
     }
 
-    for (size_t i = 0; i < MOZ_ARRAY_LENGTH(gTerminationAttribs); i++) {
-      pbattrs.AppendElement(gTerminationAttribs[i]);
+    for (const auto& cur : kTerminationAttribs) {
+        pbattrs.AppendElement(cur);
     }
 
     surface = sEGLLibrary.fCreatePbufferSurface(EGL_DISPLAY(), config, &pbattrs[0]);
@@ -698,8 +727,8 @@ GLContextProviderEGL::CreateWrappingExisting(void* aContext, void* aSurface)
 
     SurfaceCaps caps = SurfaceCaps::Any();
     EGLConfig config = EGL_NO_CONFIG;
-    RefPtr<GLContextEGL> gl = new GLContextEGL(CreateContextFlags::NONE, caps, nullptr,
-                                               false, config, (EGLSurface)aSurface,
+    RefPtr<GLContextEGL> gl = new GLContextEGL(CreateContextFlags::NONE, caps, false,
+                                               config, (EGLSurface)aSurface,
                                                (EGLContext)aContext);
     gl->SetIsDoubleBuffered(true);
     gl->mOwnsContext = false;
@@ -711,14 +740,18 @@ already_AddRefed<GLContext>
 GLContextProviderEGL::CreateForCompositorWidget(CompositorWidget* aCompositorWidget, bool aForceAccelerated)
 {
     MOZ_ASSERT(aCompositorWidget);
-    return GLContextEGLFactory::Create(GET_NATIVE_WINDOW_FROM_COMPOSITOR_WIDGET(aCompositorWidget));
+    return GLContextEGLFactory::Create(GET_NATIVE_WINDOW_FROM_COMPOSITOR_WIDGET(aCompositorWidget),
+                                       aCompositorWidget->GetCompositorOptions().UseWebRender());
 }
 
 already_AddRefed<GLContext>
-GLContextProviderEGL::CreateForWindow(nsIWidget* aWidget, bool aForceAccelerated)
+GLContextProviderEGL::CreateForWindow(nsIWidget* aWidget,
+                                      bool aWebRender,
+                                      bool aForceAccelerated)
 {
     MOZ_ASSERT(aWidget);
-    return GLContextEGLFactory::Create(GET_NATIVE_WINDOW_FROM_REAL_WIDGET(aWidget));
+    return GLContextEGLFactory::Create(GET_NATIVE_WINDOW_FROM_REAL_WIDGET(aWidget),
+                                       aWebRender);
 }
 
 #if defined(ANDROID)
@@ -892,8 +925,8 @@ GLContextEGL::CreateEGLPBufferOffscreenContext(CreateContextFlags flags,
         return nullptr;
     }
 
-    RefPtr<GLContextEGL> gl = GLContextEGL::CreateGLContext(flags, configCaps, nullptr,
-                                                            true, config, surface,
+    RefPtr<GLContextEGL> gl = GLContextEGL::CreateGLContext(flags, configCaps, true,
+                                                            config, surface,
                                                             out_failureId);
     if (!gl) {
         NS_WARNING("Failed to create GLContext from PBuffer");

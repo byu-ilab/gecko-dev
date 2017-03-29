@@ -2399,9 +2399,10 @@ ReflowInput::InitConstraints(nsPresContext*     aPresContext,
       if (alignCBType == nsGkAtoms::gridContainerFrame) {
         // Shrink-wrap grid items that will be aligned (rather than stretched)
         // in its inline axis.
-        auto inlineAxisAlignment = wm.IsOrthogonalTo(cbwm) ?
-          mStylePosition->UsedAlignSelf(mFrame->StyleContext()->GetParent()) :
-          mStylePosition->UsedJustifySelf(mFrame->StyleContext()->GetParent());
+        auto inlineAxisAlignment =
+          wm.IsOrthogonalTo(cbwm)
+            ? mStylePosition->UsedAlignSelf(alignCB->StyleContext())
+            : mStylePosition->UsedJustifySelf(alignCB->StyleContext());
         if ((inlineAxisAlignment != NS_STYLE_ALIGN_STRETCH &&
              inlineAxisAlignment != NS_STYLE_ALIGN_NORMAL) ||
             mStyleMargin->mMargin.GetIStartUnit(wm) == eStyleUnit_Auto ||
@@ -2527,7 +2528,7 @@ SizeComputationInput::InitOffsets(WritingMode aWM,
   nsIntMargin widget;
   if (isThemed &&
       presContext->GetTheme()->GetWidgetPadding(presContext->DeviceContext(),
-                                                mFrame, disp->mAppearance,
+                                                mFrame, disp->UsedAppearance(),
                                                 &widget)) {
     ComputedPhysicalPadding().top = presContext->DevPixelsToAppUnits(widget.top);
     ComputedPhysicalPadding().right = presContext->DevPixelsToAppUnits(widget.right);
@@ -2535,7 +2536,7 @@ SizeComputationInput::InitOffsets(WritingMode aWM,
     ComputedPhysicalPadding().left = presContext->DevPixelsToAppUnits(widget.left);
     needPaddingProp = false;
   }
-  else if (mFrame->IsSVGText()) {
+  else if (nsSVGUtils::IsInSVGTextSubtree(mFrame)) {
     ComputedPhysicalPadding().SizeTo(0, 0, 0, 0);
     needPaddingProp = false;
   }
@@ -2578,7 +2579,7 @@ SizeComputationInput::InitOffsets(WritingMode aWM,
   if (isThemed) {
     nsIntMargin widget;
     presContext->GetTheme()->GetWidgetBorder(presContext->DeviceContext(),
-                                             mFrame, disp->mAppearance,
+                                             mFrame, disp->UsedAppearance(),
                                              &widget);
     ComputedPhysicalBorderPadding().top =
       presContext->DevPixelsToAppUnits(widget.top);
@@ -2589,7 +2590,7 @@ SizeComputationInput::InitOffsets(WritingMode aWM,
     ComputedPhysicalBorderPadding().left =
       presContext->DevPixelsToAppUnits(widget.left);
   }
-  else if (mFrame->IsSVGText()) {
+  else if (nsSVGUtils::IsInSVGTextSubtree(mFrame)) {
     ComputedPhysicalBorderPadding().SizeTo(0, 0, 0, 0);
   }
   else if (aBorder) {  // border is an input arg
@@ -2868,7 +2869,7 @@ SizeComputationInput::ComputeMargin(WritingMode aWM,
                                 const LogicalSize& aPercentBasis)
 {
   // SVG text frames have no margin.
-  if (mFrame->IsSVGText()) {
+  if (nsSVGUtils::IsInSVGTextSubtree(mFrame)) {
     return false;
   }
 
@@ -3038,24 +3039,6 @@ ReflowInput::ComputeMinMaxValues(const LogicalSize&aCBSize)
   // 'max-height', 'max-height' is set to the value of 'min-height'
   if (ComputedMinBSize() > ComputedMaxBSize()) {
     ComputedMaxBSize() = ComputedMinBSize();
-  }
-}
-
-void
-ReflowInput::SetTruncated(const ReflowOutput& aMetrics,
-                                nsReflowStatus* aStatus) const
-{
-  const WritingMode containerWM = aMetrics.GetWritingMode();
-  if (GetWritingMode().IsOrthogonalTo(containerWM)) {
-    // Orthogonal flows are always reflowed with an unconstrained dimension,
-    // so should never end up truncated (see ReflowInput::Init()).
-    *aStatus &= ~NS_FRAME_TRUNCATED;
-  } else if (AvailableBSize() != NS_UNCONSTRAINEDSIZE &&
-             AvailableBSize() < aMetrics.BSize(containerWM) &&
-             !mFlags.mIsTopOfPage) {
-    *aStatus |= NS_FRAME_TRUNCATED;
-  } else {
-    *aStatus &= ~NS_FRAME_TRUNCATED;
   }
 }
 

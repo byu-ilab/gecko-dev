@@ -334,6 +334,21 @@ class nsObjectLoadingContent : public nsImageLoadingContent
      */
     virtual nsContentPolicyType GetContentPolicyType() const = 0;
 
+    /**
+     * Decides whether we should load <embed>/<object> node content.
+     *
+     * If this is an <embed> or <object> node there are cases in which we should
+     * not try to load the content:
+     *
+     * - If the node is the child of a media element
+     * - If the node is the child of an <object> node that already has
+     *   content being loaded.
+     *
+     * In these cases, this function will return false, which will cause
+     * us to skip calling LoadObject.
+     */
+    bool BlockEmbedOrObjectContentLoading();
+
   private:
 
     // Object parameter changes returned by UpdateObjectParameters
@@ -499,13 +514,6 @@ class nsObjectLoadingContent : public nsImageLoadingContent
      * @return true if call succeeded and NS_CP_ACCEPTED(*aContentPolicy)
      */
     bool CheckProcessPolicy(int16_t *aContentPolicy);
-
-    /**
-     * Checks whether the given type is a supported document type
-     *
-     * NOTE Does not take content policy or capabilities into account
-     */
-    bool IsSupportedDocument(const nsCString& aType);
 
     /**
      * Gets the plugin instance and creates a plugin stream listener, assigning
@@ -677,7 +685,7 @@ class nsObjectLoadingContent : public nsImageLoadingContent
     bool                        mActivated : 1;
 
     // Whether content blocking is enabled or not for this object.
-    bool                        mContentBlockingDisabled : 1;
+    bool                        mContentBlockingEnabled : 1;
 
     // Protects DoStopPlugin from reentry (bug 724781).
     bool                        mIsStopping : 1;
@@ -700,7 +708,7 @@ class nsObjectLoadingContent : public nsImageLoadingContent
     bool                        mPreferFallback : 1;
     bool                        mPreferFallbackKnown : 1;
 
-    nsWeakFrame                 mPrintFrame;
+    WeakFrame                   mPrintFrame;
 
     RefPtr<nsPluginInstanceOwner> mInstanceOwner;
     nsTArray<mozilla::dom::MozPluginParameter> mCachedAttributes;

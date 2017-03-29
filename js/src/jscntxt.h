@@ -28,6 +28,8 @@ struct DtoaState;
 
 namespace js {
 
+class AutoCompartment;
+
 namespace jit {
 class JitContext;
 class DebugModeOSRVolatileJitFrameIterator;
@@ -39,7 +41,7 @@ typedef HashSet<Shape*> ShapeSet;
 class MOZ_RAII AutoCycleDetector
 {
   public:
-    using Set = HashSet<JSObject*, MovableCellHasher<JSObject*>, SystemAllocPolicy>;
+    using Vector = GCVector<JSObject*, 8>;
 
     AutoCycleDetector(JSContext* cx, HandleObject objArg
                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
@@ -55,17 +57,11 @@ class MOZ_RAII AutoCycleDetector
     bool foundCycle() { return cyclic; }
 
   private:
-    Generation hashsetGenerationAtInit;
     JSContext* cx;
     RootedObject obj;
-    Set::AddPtr hashsetAddPointer;
     bool cyclic;
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
-
-/* Updates references in the cycle detection set if the GC moves them. */
-extern void
-TraceCycleDetectionSet(JSTracer* trc, AutoCycleDetector::Set& set);
 
 struct AutoResolving;
 
@@ -78,6 +74,12 @@ void ReportOverRecursed(JSContext* cx, unsigned errorNumber);
 /* Thread Local Storage slot for storing the context for a thread. */
 extern MOZ_THREAD_LOCAL(JSContext*) TlsContext;
 
+enum class ContextKind
+{
+    Cooperative,
+    Background
+};
+
 } /* namespace js */
 
 /*
@@ -87,16 +89,17 @@ extern MOZ_THREAD_LOCAL(JSContext*) TlsContext;
 struct JSContext : public JS::RootingContext,
                    public js::MallocProvider<JSContext>
 {
-    explicit JSContext(JSRuntime* runtime, const JS::ContextOptions& options);
+    JSContext(JSRuntime* runtime, const JS::ContextOptions& options);
     ~JSContext();
 
-    bool init();
+    bool init(js::ContextKind kind);
 
   private:
-    JSRuntime* const runtime_;
+    js::UnprotectedData<JSRuntime*> runtime_;
+    js::WriteOnceData<js::ContextKind> kind_;
 
     // System handle for the thread this context is associated with.
-    size_t threadNative_;
+    js::WriteOnceData<size_t> threadNative_;
 
     // The thread on which this context is running, if this is performing a parse task.
     js::ThreadLocalData<js::HelperThread*> helperThread_;
@@ -106,6 +109,11 @@ struct JSContext : public JS::RootingContext,
     js::ThreadLocalData<js::gc::ArenaLists*> arenas_;
 
   public:
+    // This is used by helper threads to change the runtime their context is
+    // currently operating on.
+    void setRuntime(JSRuntime* rt);
+
+    bool isCooperativelyScheduled() const { return kind_ == js::ContextKind::Cooperative; }
     size_t threadNative() const { return threadNative_; }
 
     inline js::gc::ArenaLists* arenas() const { return arenas_; }
@@ -193,10 +201,16 @@ struct JSContext : public JS::RootingContext,
     }
 #endif
 
+  private:
     // If |c| or |oldCompartment| is the atoms compartment, the
     // |exclusiveAccessLock| must be held.
     inline void enterCompartment(JSCompartment* c,
                                  const js::AutoLockForExclusiveAccess* maybeLock = nullptr);
+    friend class js::AutoCompartment;
+
+  public:
+    template <typename T>
+    inline void enterCompartmentOf(const T& target);
     inline void enterNullCompartment();
     inline void leaveCompartment(JSCompartment* oldCompartment,
                                  const js::AutoLockForExclusiveAccess* maybeLock = nullptr);
@@ -214,6 +228,12 @@ struct JSContext : public JS::RootingContext,
     JS::Zone* zone() const {
         MOZ_ASSERT_IF(!compartment(), !zone_);
         MOZ_ASSERT_IF(compartment(), js::GetCompartmentZone(compartment()) == zone_);
+        return zoneRaw();
+    }
+
+    // For use when the context's zone is being read by another thread and the
+    // compartment and zone pointers might not be in sync.
+    JS::Zone* zoneRaw() const {
         return zone_;
     }
 
@@ -293,12 +313,12 @@ struct JSContext : public JS::RootingContext,
      * boundary between Result-using and non-Result-using code.
      */
     template <typename V, typename E>
-    bool resultToBool(JS::Result<V, E> result) {
+    bool resultToBool(const JS::Result<V, E>& result) {
         return result.isOk();
     }
 
     template <typename V, typename E>
-    V* resultToPtr(JS::Result<V*, E> result) {
+    V* resultToPtr(const JS::Result<V*, E>& result) {
         return result.isOk() ? result.unwrap() : nullptr;
     }
 
@@ -439,12 +459,12 @@ struct JSContext : public JS::RootingContext,
     js::ThreadLocalData<bool> ionCompilingSafeForMinorGC;
 
     // Whether this thread is currently performing GC.  This thread could be the
-    // main thread or a helper thread while the main thread is running the
+    // active thread or a helper thread while the active thread is running the
     // collector.
     js::ThreadLocalData<bool> performingGC;
 
     // Whether this thread is currently sweeping GC things.  This thread could
-    // be the main thread or a helper thread while the main thread is running
+    // be the active thread or a helper thread while the active thread is running
     // the mutator.  This is used to assert that destruction of GCPtr only
     // happens when we are sweeping.
     js::ThreadLocalData<bool> gcSweeping;
@@ -491,6 +511,11 @@ struct JSContext : public JS::RootingContext,
     js::ThreadLocalData<bool> runningOOMTest;
 #endif
 
+    // True if we should assert that
+    //     !comp->validAccessPtr || *comp->validAccessPtr
+    // is true for every |comp| that we run JS code in.
+    js::ThreadLocalData<unsigned> enableAccessValidation;
+
     /*
      * Some regions of code are hard for the static rooting hazard analysis to
      * understand. In those cases, we trade the static analysis for a dynamic
@@ -506,9 +531,9 @@ struct JSContext : public JS::RootingContext,
     // with AutoDisableCompactingGC which uses this counter.
     js::ThreadLocalData<unsigned> compactingDisabledCount;
 
-    // Count of AutoKeepAtoms instances on the main thread's stack. When any
+    // Count of AutoKeepAtoms instances on the current thread's stack. When any
     // instances exist, atoms in the runtime will not be collected. Threads
-    // off the main thread do not increment this value, but the presence
+    // parsing off the active thread do not increment this value, but the presence
     // of any such threads also inhibits collection of atoms. We don't scan the
     // stacks of exclusive threads, so we need to avoid collecting their
     // objects in another way. The only GC thing pointers they have are to
@@ -609,14 +634,18 @@ struct JSContext : public JS::RootingContext,
 
   private:
     /* State for object and array toSource conversion. */
-    js::ThreadLocalData<js::AutoCycleDetector::Set> cycleDetectorSet_;
+    js::ThreadLocalData<js::AutoCycleDetector::Vector> cycleDetectorVector_;
 
   public:
-    js::AutoCycleDetector::Set& cycleDetectorSet() { return cycleDetectorSet_.ref(); }
-    const js::AutoCycleDetector::Set& cycleDetectorSet() const { return cycleDetectorSet_.ref(); }
+    js::AutoCycleDetector::Vector& cycleDetectorVector() {
+        return cycleDetectorVector_.ref();
+    }
+    const js::AutoCycleDetector::Vector& cycleDetectorVector() const {
+        return cycleDetectorVector_.ref();
+    }
 
     /* Client opaque pointer. */
-    void* data;
+    js::UnprotectedData<void*> data;
 
     void initJitStackLimit();
     void resetJitStackLimit();
@@ -741,7 +770,7 @@ struct JSContext : public JS::RootingContext,
 
     void trace(JSTracer* trc);
 
-    inline js::ZoneGroupCaches& caches();
+    inline js::RuntimeCaches& caches();
 
   private:
     /*
@@ -769,9 +798,9 @@ struct JSContext : public JS::RootingContext,
         RequestInterruptCanWait
     };
 
-    // Any thread can call requestInterrupt() to request that the main JS thread
+    // Any thread can call requestInterrupt() to request that this thread
     // stop running and call the interrupt callback (allowing the interrupt
-    // callback to halt execution). To stop the main JS thread, requestInterrupt
+    // callback to halt execution). To stop this thread, requestInterrupt
     // sets two fields: interrupt_ (set to true) and jitStackLimit_ (set to
     // UINTPTR_MAX). The JS engine must continually poll one of these fields
     // and call handleInterrupt if either field has the interrupt value. (The
@@ -782,7 +811,7 @@ struct JSContext : public JS::RootingContext,
     //
     // Note that the writes to interrupt_ and jitStackLimit_ use a Relaxed
     // Atomic so, while the writes are guaranteed to eventually be visible to
-    // the main thread, it can happen in any order. handleInterrupt calls the
+    // this thread, it can happen in any order. handleInterrupt calls the
     // interrupt callback if either is set, so it really doesn't matter as long
     // as the JS engine is continually polling at least one field. In corner
     // cases, this relaxed ordering could lead to an interrupt handler being
@@ -876,6 +905,13 @@ JSContext::boolToResult(bool ok)
     return JS::Result<>(reportedError);
 }
 
+inline JSContext*
+JSRuntime::activeContextFromOwnThread()
+{
+    MOZ_ASSERT(activeContext() == js::TlsContext.get());
+    return activeContext();
+}
+
 namespace js {
 
 struct MOZ_RAII AutoResolving {
@@ -921,6 +957,15 @@ struct MOZ_RAII AutoResolving {
 extern JSContext*
 NewContext(uint32_t maxBytes, uint32_t maxNurseryBytes, JSRuntime* parentRuntime);
 
+extern JSContext*
+NewCooperativeContext(JSContext* siblingContext);
+
+extern void
+YieldCooperativeContext(JSContext* cx);
+
+extern void
+ResumeCooperativeContext(JSContext* cx);
+
 extern void
 DestroyContext(JSContext* cx);
 
@@ -962,6 +1007,13 @@ ExpandErrorArgumentsVA(JSContext* cx, JSErrorCallback callback,
                        const char16_t** messageArgs,
                        ErrorArgumentsType argumentsType,
                        JSErrorReport* reportp, va_list ap);
+
+extern bool
+ExpandErrorArgumentsVA(JSContext* cx, JSErrorCallback callback,
+                       void* userRef, const unsigned errorNumber,
+                       const char16_t** messageArgs,
+                       ErrorArgumentsType argumentsType,
+                       JSErrorNotes::Note* notep, va_list ap);
 
 /* |callee| requires a usage string provided by JS_DefineFunctionsWithHelp. */
 extern void
@@ -1019,6 +1071,9 @@ ReportValueErrorFlags(JSContext* cx, unsigned flags, const unsigned errorNumber,
 #define ReportValueError3(cx,errorNumber,spindex,v,fallback,arg1,arg2)        \
     ((void)ReportValueErrorFlags(cx, JSREPORT_ERROR, errorNumber,             \
                                     spindex, v, fallback, arg1, arg2))
+
+JSObject*
+CreateErrorNotesArray(JSContext* cx, JSErrorReport* report);
 
 } /* namespace js */
 
@@ -1114,12 +1169,12 @@ class MOZ_RAII AutoLockForExclusiveAccess
 
     void init(JSRuntime* rt) {
         runtime = rt;
-        if (runtime->numExclusiveThreads) {
+        if (runtime->hasHelperThreadZones()) {
             runtime->exclusiveAccessLock.lock();
         } else {
-            MOZ_ASSERT(!runtime->mainThreadHasExclusiveAccess);
+            MOZ_ASSERT(!runtime->activeThreadHasExclusiveAccess);
 #ifdef DEBUG
-            runtime->mainThreadHasExclusiveAccess = true;
+            runtime->activeThreadHasExclusiveAccess = true;
 #endif
         }
     }
@@ -1134,12 +1189,12 @@ class MOZ_RAII AutoLockForExclusiveAccess
         init(rt);
     }
     ~AutoLockForExclusiveAccess() {
-        if (runtime->numExclusiveThreads) {
+        if (runtime->hasHelperThreadZones()) {
             runtime->exclusiveAccessLock.unlock();
         } else {
-            MOZ_ASSERT(runtime->mainThreadHasExclusiveAccess);
+            MOZ_ASSERT(runtime->activeThreadHasExclusiveAccess);
 #ifdef DEBUG
-            runtime->mainThreadHasExclusiveAccess = false;
+            runtime->activeThreadHasExclusiveAccess = false;
 #endif
         }
     }

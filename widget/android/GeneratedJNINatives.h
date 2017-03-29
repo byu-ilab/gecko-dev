@@ -101,7 +101,7 @@ template<class Impl>
 class GeckoAppShell::Natives : public mozilla::jni::NativeImpl<GeckoAppShell, Impl>
 {
 public:
-    static const JNINativeMethod methods[8];
+    static const JNINativeMethod methods[7];
 };
 
 template<class Impl>
@@ -133,11 +133,7 @@ const JNINativeMethod GeckoAppShell::Natives<Impl>::methods[] = {
 
     mozilla::jni::MakeNativeMethod<GeckoAppShell::ReportJavaCrash_t>(
             mozilla::jni::NativeStub<GeckoAppShell::ReportJavaCrash_t, Impl>
-            ::template Wrap<&Impl::ReportJavaCrash>),
-
-    mozilla::jni::MakeNativeMethod<GeckoAppShell::SyncNotifyObservers_t>(
-            mozilla::jni::NativeStub<GeckoAppShell::SyncNotifyObservers_t, Impl>
-            ::template Wrap<&Impl::SyncNotifyObservers>)
+            ::template Wrap<&Impl::ReportJavaCrash>)
 };
 
 template<class Impl>
@@ -171,41 +167,37 @@ const JNINativeMethod GeckoBatteryManager::Natives<Impl>::methods[] = {
 };
 
 template<class Impl>
-class GeckoEditable::Natives : public mozilla::jni::NativeImpl<GeckoEditable, Impl>
+class GeckoEditableChild::Natives : public mozilla::jni::NativeImpl<GeckoEditableChild, Impl>
 {
 public:
-    static const JNINativeMethod methods[7];
+    static const JNINativeMethod methods[6];
 };
 
 template<class Impl>
-const JNINativeMethod GeckoEditable::Natives<Impl>::methods[] = {
+const JNINativeMethod GeckoEditableChild::Natives<Impl>::methods[] = {
 
-    mozilla::jni::MakeNativeMethod<GeckoEditable::DisposeNative_t>(
-            mozilla::jni::NativeStub<GeckoEditable::DisposeNative_t, Impl>
-            ::template Wrap<&Impl::DisposeNative>),
-
-    mozilla::jni::MakeNativeMethod<GeckoEditable::OnImeAddCompositionRange_t>(
-            mozilla::jni::NativeStub<GeckoEditable::OnImeAddCompositionRange_t, Impl>
+    mozilla::jni::MakeNativeMethod<GeckoEditableChild::OnImeAddCompositionRange_t>(
+            mozilla::jni::NativeStub<GeckoEditableChild::OnImeAddCompositionRange_t, Impl>
             ::template Wrap<&Impl::OnImeAddCompositionRange>),
 
-    mozilla::jni::MakeNativeMethod<GeckoEditable::OnImeReplaceText_t>(
-            mozilla::jni::NativeStub<GeckoEditable::OnImeReplaceText_t, Impl>
+    mozilla::jni::MakeNativeMethod<GeckoEditableChild::OnImeReplaceText_t>(
+            mozilla::jni::NativeStub<GeckoEditableChild::OnImeReplaceText_t, Impl>
             ::template Wrap<&Impl::OnImeReplaceText>),
 
-    mozilla::jni::MakeNativeMethod<GeckoEditable::OnImeRequestCursorUpdates_t>(
-            mozilla::jni::NativeStub<GeckoEditable::OnImeRequestCursorUpdates_t, Impl>
+    mozilla::jni::MakeNativeMethod<GeckoEditableChild::OnImeRequestCursorUpdates_t>(
+            mozilla::jni::NativeStub<GeckoEditableChild::OnImeRequestCursorUpdates_t, Impl>
             ::template Wrap<&Impl::OnImeRequestCursorUpdates>),
 
-    mozilla::jni::MakeNativeMethod<GeckoEditable::OnImeSynchronize_t>(
-            mozilla::jni::NativeStub<GeckoEditable::OnImeSynchronize_t, Impl>
+    mozilla::jni::MakeNativeMethod<GeckoEditableChild::OnImeSynchronize_t>(
+            mozilla::jni::NativeStub<GeckoEditableChild::OnImeSynchronize_t, Impl>
             ::template Wrap<&Impl::OnImeSynchronize>),
 
-    mozilla::jni::MakeNativeMethod<GeckoEditable::OnImeUpdateComposition_t>(
-            mozilla::jni::NativeStub<GeckoEditable::OnImeUpdateComposition_t, Impl>
+    mozilla::jni::MakeNativeMethod<GeckoEditableChild::OnImeUpdateComposition_t>(
+            mozilla::jni::NativeStub<GeckoEditableChild::OnImeUpdateComposition_t, Impl>
             ::template Wrap<&Impl::OnImeUpdateComposition>),
 
-    mozilla::jni::MakeNativeMethod<GeckoEditable::OnKeyEvent_t>(
-            mozilla::jni::NativeStub<GeckoEditable::OnKeyEvent_t, Impl>
+    mozilla::jni::MakeNativeMethod<GeckoEditableChild::OnKeyEvent_t>(
+            mozilla::jni::NativeStub<GeckoEditableChild::OnKeyEvent_t, Impl>
             ::template Wrap<&Impl::OnKeyEvent>)
 };
 
@@ -461,6 +453,21 @@ const JNINativeMethod VsyncSource::Natives<Impl>::methods[] = {
     mozilla::jni::MakeNativeMethod<VsyncSource::NotifyVsync_t>(
             mozilla::jni::NativeStub<VsyncSource::NotifyVsync_t, Impl>
             ::template Wrap<&Impl::NotifyVsync>)
+};
+
+template<class Impl>
+class GeckoProcessManager::Natives : public mozilla::jni::NativeImpl<GeckoProcessManager, Impl>
+{
+public:
+    static const JNINativeMethod methods[1];
+};
+
+template<class Impl>
+const JNINativeMethod GeckoProcessManager::Natives<Impl>::methods[] = {
+
+    mozilla::jni::MakeNativeMethod<GeckoProcessManager::GetEditableParent_t>(
+            mozilla::jni::NativeStub<GeckoProcessManager::GetEditableParent_t, Impl>
+            ::template Wrap<&Impl::GetEditableParent>)
 };
 
 } /* java */

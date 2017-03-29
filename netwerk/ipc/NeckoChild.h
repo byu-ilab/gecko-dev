@@ -30,6 +30,10 @@ protected:
                            const HttpChannelCreationArgs& aOpenArgs) override;
   virtual bool DeallocPHttpChannelChild(PHttpChannelChild*) override;
 
+  virtual PStunAddrsRequestChild* AllocPStunAddrsRequestChild() override;
+  virtual bool
+    DeallocPStunAddrsRequestChild(PStunAddrsRequestChild* aActor) override;
+
   virtual PAltDataOutputStreamChild* AllocPAltDataOutputStreamChild(const nsCString& type, PHttpChannelChild* channel) override;
   virtual bool DeallocPAltDataOutputStreamChild(PAltDataOutputStreamChild* aActor) override;
 
@@ -59,6 +63,7 @@ protected:
                                                 const nsCString& aFilter) override;
   virtual bool DeallocPUDPSocketChild(PUDPSocketChild*) override;
   virtual PDNSRequestChild* AllocPDNSRequestChild(const nsCString& aHost,
+                                                  const OriginAttributes& aOriginAttributes,
                                                   const uint32_t& aFlags,
                                                   const nsCString& aNetworkInterface) override;
   virtual bool DeallocPDNSRequestChild(PDNSRequestChild*) override;

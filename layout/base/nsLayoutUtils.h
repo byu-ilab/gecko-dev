@@ -31,6 +31,7 @@
 #include "ImageContainer.h"
 #include "gfx2DGlue.h"
 #include "nsStyleConsts.h"
+#include "SVGImageContext.h"
 #include <limits>
 #include <algorithm>
 
@@ -65,7 +66,6 @@ struct nsOverflowAreas;
 namespace mozilla {
 enum class CSSPseudoElementType : uint8_t;
 class EventListenerManager;
-class SVGImageContext;
 struct IntrinsicSize;
 struct ContainerLayerParameters;
 class WritingMode;
@@ -160,6 +160,7 @@ public:
   typedef mozilla::ScreenMargin ScreenMargin;
   typedef mozilla::LayoutDeviceIntSize LayoutDeviceIntSize;
   typedef mozilla::StyleGeometryBox StyleGeometryBox;
+  typedef mozilla::SVGImageContext SVGImageContext;
 
   /**
    * Finds previously assigned ViewID for the given content element, if any.
@@ -195,6 +196,11 @@ public:
    */
   static bool HasDisplayPort(nsIContent* aContent);
 
+  /**
+   * Check if the given element has a margins based displayport but is missing a
+   * displayport base rect that it needs to properly compute a displayport rect.
+   */
+  static bool IsMissingDisplayPortBaseRect(nsIContent* aContent);
 
   /**
    * Go through the IPC Channel and update displayport margins for content
@@ -1212,7 +1218,7 @@ public:
 
   static void GetAllInFlowRectsAndTexts(nsIFrame* aFrame, nsIFrame* aRelativeTo,
                                         RectCallback* aCallback,
-                                        mozilla::dom::DOMStringList* aTextList,
+                                        mozilla::dom::Sequence<nsString>* aTextList,
                                         uint32_t aFlags = 0);
 
   /**
@@ -1731,6 +1737,34 @@ public:
    */
   static SamplingFilter GetSamplingFilterForFrame(nsIFrame* aFrame);
 
+  static inline void InitDashPattern(StrokeOptions& aStrokeOptions,
+                                     uint8_t aBorderStyle) {
+    if (aBorderStyle == NS_STYLE_BORDER_STYLE_DOTTED) {
+      static Float dot[] = { 1.f, 1.f };
+      aStrokeOptions.mDashLength = MOZ_ARRAY_LENGTH(dot);
+      aStrokeOptions.mDashPattern = dot;
+    } else if (aBorderStyle == NS_STYLE_BORDER_STYLE_DASHED) {
+      static Float dash[] = { 5.f, 5.f };
+      aStrokeOptions.mDashLength = MOZ_ARRAY_LENGTH(dash);
+      aStrokeOptions.mDashPattern = dash;
+    } else {
+      aStrokeOptions.mDashLength = 0;
+      aStrokeOptions.mDashPattern = nullptr;
+    }
+  }
+
+  /**
+   * Convert an nsRect to a gfxRect.
+   */
+  static gfxRect RectToGfxRect(const nsRect& aRect,
+                               int32_t aAppUnitsPerDevPixel);
+
+  static gfxPoint PointToGfxPoint(const nsPoint& aPoint,
+                                  int32_t aAppUnitsPerPixel) {
+    return gfxPoint(gfxFloat(aPoint.x) / aAppUnitsPerPixel,
+                    gfxFloat(aPoint.y) / aAppUnitsPerPixel);
+  }
+
   /* N.B. The only difference between variants of the Draw*Image
    * functions below is the type of the aImage argument.
    */
@@ -1802,34 +1836,6 @@ public:
                               uint32_t            aImageFlags,
                               float               aOpacity = 1.0);
 
-  static inline void InitDashPattern(StrokeOptions& aStrokeOptions,
-                                     uint8_t aBorderStyle) {
-    if (aBorderStyle == NS_STYLE_BORDER_STYLE_DOTTED) {
-      static Float dot[] = { 1.f, 1.f };
-      aStrokeOptions.mDashLength = MOZ_ARRAY_LENGTH(dot);
-      aStrokeOptions.mDashPattern = dot;
-    } else if (aBorderStyle == NS_STYLE_BORDER_STYLE_DASHED) {
-      static Float dash[] = { 5.f, 5.f };
-      aStrokeOptions.mDashLength = MOZ_ARRAY_LENGTH(dash);
-      aStrokeOptions.mDashPattern = dash;
-    } else {
-      aStrokeOptions.mDashLength = 0;
-      aStrokeOptions.mDashPattern = nullptr;
-    }
-  }
-
-  /**
-   * Convert an nsRect to a gfxRect.
-   */
-  static gfxRect RectToGfxRect(const nsRect& aRect,
-                               int32_t aAppUnitsPerDevPixel);
-
-  static gfxPoint PointToGfxPoint(const nsPoint& aPoint,
-                                  int32_t aAppUnitsPerPixel) {
-    return gfxPoint(gfxFloat(aPoint.x) / aAppUnitsPerPixel,
-                    gfxFloat(aPoint.y) / aAppUnitsPerPixel);
-  }
-
   /**
    * Draw a whole image without scaling or tiling.
    *
@@ -1864,10 +1870,14 @@ public:
    *   @param aImage            The image.
    *   @param aDest             The area that the image should fill.
    *   @param aDirty            Pixels outside this area may be skipped.
-   *   @param aSVGContext       If non-null, SVG-related rendering context
-   *                            such as overridden attributes on the image
-   *                            document's root <svg> node. Ignored for
-   *                            raster images.
+   *   @param aSVGContext       Optionally provides an SVGImageContext.
+   *                            Callers should pass an SVGImageContext with at
+   *                            least the viewport size set if aImage may be of
+   *                            type imgIContainer::TYPE_VECTOR, or pass
+   *                            Nothing() if it is of type
+   *                            imgIContainer::TYPE_RASTER (to save cycles
+   *                            constructing an SVGImageContext, since this
+   *                            argument will be ignored for raster images).
    *   @param aImageFlags       Image flags of the imgIContainer::FLAG_*
    *                            variety.
    *   @param aAnchor           If non-null, a point which we will ensure
@@ -1883,7 +1893,7 @@ public:
                                     const SamplingFilter aSamplingFilter,
                                     const nsRect&       aDest,
                                     const nsRect&       aDirty,
-                                    const mozilla::SVGImageContext* aSVGContext,
+                                    const mozilla::Maybe<SVGImageContext>& aSVGContext,
                                     uint32_t            aImageFlags,
                                     const nsPoint*      aAnchorPoint = nullptr,
                                     const nsRect*       aSourceArea = nullptr);
@@ -2442,6 +2452,10 @@ public:
 #endif
   }
 
+  static bool StyleAttrWithXMLBaseDisabled() {
+    return sStyleAttrWithXMLBaseDisabled;
+  }
+
   static uint32_t IdlePeriodDeadlineLimit() {
     return sIdlePeriodDeadlineLimit;
   }
@@ -2669,6 +2683,14 @@ public:
    * enabled in Fennec it will always return 1.0.
    */
   static float GetCurrentAPZResolutionScale(nsIPresShell* aShell);
+
+  /**
+   * Returns true if we need to disable async scrolling for this particular
+   * element. Note that this does a partial disabling - the displayport still
+   * exists but uses a very small margin, and the compositor doesn't apply the
+   * async transform. However, the content may still be layerized.
+   */
+  static bool ShouldDisableApzForElement(nsIContent* aContent);
 
   /**
    * Log a key/value pair for APZ testing during a paint.
@@ -2909,6 +2931,7 @@ private:
 #ifdef MOZ_STYLO
   static bool sStyloEnabled;
 #endif
+  static bool sStyleAttrWithXMLBaseDisabled;
   static uint32_t sIdlePeriodDeadlineLimit;
   static uint32_t sQuiescentFramesBeforeIdlePeriod;
 

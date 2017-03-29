@@ -185,6 +185,7 @@ class WasmInstanceObject : public NativeObject
 
     static WasmInstanceObject* create(JSContext* cx,
                                       UniquePtr<wasm::Code> code,
+                                      UniquePtr<wasm::GlobalSegment> globals,
                                       HandleWasmMemoryObject memory,
                                       Vector<RefPtr<wasm::Table>, 0, SystemAllocPolicy>&& tables,
                                       Handle<FunctionVector> funcImports,
@@ -275,7 +276,7 @@ class WasmTableObject : public NativeObject
     // Note that, after creation, a WasmTableObject's table() is not initialized
     // and must be initialized before use.
 
-    static WasmTableObject* create(JSContext* cx, wasm::Limits limits);
+    static WasmTableObject* create(JSContext* cx, const wasm::Limits& limits);
     wasm::Table& table() const;
 };
 

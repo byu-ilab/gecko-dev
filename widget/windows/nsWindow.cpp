@@ -80,7 +80,6 @@
 
 #include "mozilla/Logging.h"
 #include "prtime.h"
-#include "prprf.h"
 #include "prmem.h"
 #include "prenv.h"
 
@@ -136,6 +135,7 @@
 #include "mozilla/WindowsVersion.h"
 #include "mozilla/TextEvents.h" // For WidgetKeyboardEvent
 #include "mozilla/TextEventDispatcherListener.h"
+#include "mozilla/widget/nsAutoRollup.h"
 #include "mozilla/widget/WinNativeEventData.h"
 #include "mozilla/widget/PlatformWidgetTypes.h"
 #include "nsThemeConstants.h"
@@ -205,8 +205,8 @@
 #include "mozilla/gfx/DeviceManagerDx.h"
 #include "mozilla/layers/APZCTreeManager.h"
 #include "mozilla/layers/InputAPZContext.h"
+#include "mozilla/layers/KnowsCompositor.h"
 #include "mozilla/layers/ScrollInputMethods.h"
-#include "ClientLayerManager.h"
 #include "InputData.h"
 
 #include "mozilla/Telemetry.h"
@@ -381,7 +381,7 @@ static bool gIsPointerEventsEnabled = false;
 // coordinate this many milliseconds:
 #define HITTEST_CACHE_LIFETIME_MS 50
 
-#if defined(ACCESSIBILITY) && defined(_M_IX86)
+#if defined(ACCESSIBILITY)
 
 namespace mozilla {
 
@@ -455,8 +455,10 @@ private:
                                ::GetCurrentThreadId());
     MOZ_ASSERT(mHook);
 
-    if (!IsWin10OrLater() && !sProcessCaretEventsStub) {
-      // tiptsf loads when STA COM is first initialized, so it should be present
+    // On touchscreen devices, tiptsf.dll will have been loaded when STA COM was
+    // first initialized.
+    if (!IsWin10OrLater() && GetModuleHandle(L"tiptsf.dll") &&
+        !sProcessCaretEventsStub) {
       sTipTsfInterceptor.Init("tiptsf.dll");
       DebugOnly<bool> ok = sTipTsfInterceptor.AddHook("ProcessCaretEvents",
           reinterpret_cast<intptr_t>(&ProcessCaretEventsHook),
@@ -534,7 +536,8 @@ private:
     // We don't want to handle this unless the message is a WM_GETOBJECT that we
     // want to block, and the aHwnd is a nsWindow that belongs to the current
     // thread.
-    if (!aMsgResult || aMsgCode != WM_GETOBJECT || aLParam != OBJID_CLIENT ||
+    if (!aMsgResult || aMsgCode != WM_GETOBJECT ||
+        static_cast<DWORD>(aLParam) != OBJID_CLIENT ||
         !WinUtils::GetNSWindowPtr(aHwnd) ||
         ::GetWindowThreadProcessId(aHwnd, nullptr) != ::GetCurrentThreadId() ||
         !IsA11yBlocked()) {
@@ -568,7 +571,7 @@ StaticAutoPtr<TIPMessageHandler> TIPMessageHandler::sInstance;
 
 } // namespace mozilla
 
-#endif // defined(ACCESSIBILITY) && defined(_M_IX86)
+#endif // defined(ACCESSIBILITY)
 
 /**************************************************************
  **************************************************************
@@ -646,9 +649,9 @@ nsWindow::nsWindow()
     // WinTaskbar.cpp for details.
     mozilla::widget::WinTaskbar::RegisterAppUserModelID();
     KeyboardLayout::GetInstance()->OnLayoutChange(::GetKeyboardLayout(0));
-#if defined(ACCESSIBILITY) && defined(_M_IX86)
+#if defined(ACCESSIBILITY)
     mozilla::TIPMessageHandler::Initialize();
-#endif // defined(ACCESSIBILITY) && defined(_M_IX86)
+#endif // defined(ACCESSIBILITY)
     IMEHandler::Initialize();
     if (SUCCEEDED(::OleInitialize(nullptr))) {
       sIsOleInitialized = TRUE;
@@ -777,6 +780,7 @@ nsWindow::Create(nsIWidget* aParent,
   }
 
   mIsRTL = aInitData->mRTL;
+  mOpeningAnimationSuppressed = aInitData->mIsAnimationSuppressed;
 
   DWORD style = WindowStyle();
   DWORD extendedStyle = WindowExStyle();
@@ -843,9 +847,15 @@ nsWindow::Create(nsIWidget* aParent,
     return NS_ERROR_FAILURE;
   }
 
-  if (mIsRTL && WinUtils::dwmSetWindowAttributePtr) {
+  if (mIsRTL) {
     DWORD dwAttribute = TRUE;    
-    WinUtils::dwmSetWindowAttributePtr(mWnd, DWMWA_NONCLIENT_RTL_LAYOUT, &dwAttribute, sizeof dwAttribute);
+    DwmSetWindowAttribute(mWnd, DWMWA_NONCLIENT_RTL_LAYOUT, &dwAttribute, sizeof dwAttribute);
+  }
+
+  if (mOpeningAnimationSuppressed) {
+    DWORD dwAttribute = TRUE;
+    DwmSetWindowAttribute(mWnd, DWMWA_TRANSITIONS_FORCEDISABLED,
+                          &dwAttribute, sizeof dwAttribute);
   }
 
   if (!IsPlugin() &&
@@ -1622,6 +1632,12 @@ nsWindow::Show(bool bState)
     }
   }
 #endif
+
+  if (mOpeningAnimationSuppressed) {
+    DWORD dwAttribute = FALSE;
+    DwmSetWindowAttribute(mWnd, DWMWA_TRANSITIONS_FORCEDISABLED,
+                          &dwAttribute, sizeof dwAttribute);
+  }
 }
 
 /**************************************************************
@@ -1718,10 +1734,9 @@ nsWindow::SetSizeConstraints(const SizeConstraints& aConstraints)
     c.mMinSize.width = std::max(int32_t(::GetSystemMetrics(SM_CXMINTRACK)), c.mMinSize.width);
     c.mMinSize.height = std::max(int32_t(::GetSystemMetrics(SM_CYMINTRACK)), c.mMinSize.height);
   }
-  ClientLayerManager *clientLayerManager = GetLayerManager()->AsClientLayerManager();
-
-  if (clientLayerManager) {
-    int32_t maxSize = clientLayerManager->GetMaxTextureSize();
+  KnowsCompositor* knowsCompositor = GetLayerManager()->AsKnowsCompositor();
+  if (knowsCompositor) {
+    int32_t maxSize = knowsCompositor->GetMaxTextureSize();
     // We can't make ThebesLayers bigger than this anyway.. no point it letting
     // a window grow bigger as we won't be able to draw content there in
     // general.
@@ -1818,7 +1833,7 @@ nsWindow::Move(double aX, double aY)
     // region, some drivers or OSes may incorrectly copy into the clipped-out
     // area.
     if (IsPlugin() &&
-        (!mLayerManager || mLayerManager->GetBackendType() == LayersBackend::LAYERS_D3D9) &&
+        !mLayerManager &&
         mClipRects &&
         (mClipRectCount != 1 || !mClipRects[0].IsEqualInterior(LayoutDeviceIntRect(0, 0, mBounds.width, mBounds.height)))) {
       flags |= SWP_NOCOPYBITS;
@@ -3117,8 +3132,8 @@ void nsWindow::UpdateGlass()
 
   // Extends the window frame behind the client area
   if (nsUXThemeData::CheckForCompositor()) {
-    WinUtils::dwmExtendFrameIntoClientAreaPtr(mWnd, &margins);
-    WinUtils::dwmSetWindowAttributePtr(mWnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof policy);
+    DwmExtendFrameIntoClientArea(mWnd, &margins);
+    DwmSetWindowAttribute(mWnd, DWMWA_NCRENDERING_POLICY, &policy, sizeof policy);
   }
 }
 #endif
@@ -3909,7 +3924,7 @@ nsWindow::GetLayerManager(PLayerTransactionChild* aShadowManager,
       reinterpret_cast<uintptr_t>(static_cast<nsIWidget*>(this)),
       mTransparencyMode);
     // If we're not using the compositor, the options don't actually matter.
-    CompositorOptions options(false);
+    CompositorOptions options(false, false);
     mBasicLayersSurface = new InProcessWinCompositorWidget(initData, options, this);
     mCompositorWidgetDelegate = mBasicLayersSurface;
     mLayerManager = CreateBasicLayerManager();
@@ -4311,6 +4326,20 @@ nsWindow::DispatchMouseEvent(EventMessage aEventMessage, WPARAM wParam,
 
   ModifierKeyState modifierKeyState;
   modifierKeyState.InitInputEvent(event);
+
+  // eContextMenu with Shift state is special.  It won't fire "contextmenu"
+  // event in the web content for blocking web content to prevent its default.
+  // However, Shift+F10 is a standard shortcut key on Windows.  Therefore,
+  // this should not block web page to prevent its default.  I.e., it should
+  // behave same as ContextMenu key without Shift key.
+  // XXX Should we allow to block web page to prevent its default with
+  //     Ctrl+Shift+F10 or Alt+Shift+F10 instead?
+  if (aEventMessage == eContextMenu && aIsContextMenuKey && event.IsShift() &&
+      NativeKey::LastKeyMSG().message == WM_SYSKEYDOWN &&
+      NativeKey::LastKeyMSG().wParam == VK_F10) {
+    event.mModifiers &= ~MODIFIER_SHIFT;
+  }
+
   event.button    = aButton;
   event.inputSource = aInputSource;
   if (aPointerInfo) {
@@ -4990,7 +5019,7 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
       /* We don't do this for win10 glass with a custom titlebar,
        * in order to avoid the caption buttons breaking. */
       !(IsWin10OrLater() && HasGlass()) &&
-      WinUtils::dwmDwmDefWindowProcPtr(mWnd, msg, wParam, lParam, &dwmHitResult)) {
+      DwmDefWindowProc(mWnd, msg, wParam, lParam, &dwmHitResult)) {
     *aRetValue = dwmHitResult;
     return true;
   }
@@ -5029,16 +5058,16 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
         // Windows won't let us do that. Bug 212316.
         nsCOMPtr<nsIObserverService> obsServ =
           mozilla::services::GetObserverService();
-        NS_NAMED_LITERAL_STRING(context, "shutdown-persist");
-        NS_NAMED_LITERAL_STRING(syncShutdown, "syncShutdown");
-        obsServ->NotifyObservers(nullptr, "quit-application-granted", syncShutdown.get());
+        const char16_t* context = u"shutdown-persist";
+        const char16_t* syncShutdown = u"syncShutdown";
+        obsServ->NotifyObservers(nullptr, "quit-application-granted", syncShutdown);
         obsServ->NotifyObservers(nullptr, "quit-application-forced", nullptr);
         obsServ->NotifyObservers(nullptr, "quit-application", nullptr);
-        obsServ->NotifyObservers(nullptr, "profile-change-net-teardown", context.get());
-        obsServ->NotifyObservers(nullptr, "profile-change-teardown", context.get());
-        obsServ->NotifyObservers(nullptr, "profile-before-change", context.get());
-        obsServ->NotifyObservers(nullptr, "profile-before-change-qm", context.get());
-        obsServ->NotifyObservers(nullptr, "profile-before-change-telemetry", context.get());
+        obsServ->NotifyObservers(nullptr, "profile-change-net-teardown", context);
+        obsServ->NotifyObservers(nullptr, "profile-change-teardown", context);
+        obsServ->NotifyObservers(nullptr, "profile-before-change", context);
+        obsServ->NotifyObservers(nullptr, "profile-before-change-qm", context);
+        obsServ->NotifyObservers(nullptr, "profile-before-change-telemetry", context);
         // Then a controlled but very quick exit.
         _exit(0);
       }
@@ -6658,6 +6687,25 @@ void nsWindow::UserActivity()
   }
 }
 
+nsIntPoint nsWindow::GetTouchCoordinates(WPARAM wParam, LPARAM lParam)
+{
+  nsIntPoint ret;
+  uint32_t cInputs = LOWORD(wParam);
+  if (cInputs != 1) {
+    // Just return 0,0 if there isn't exactly one touch point active
+    return ret;
+  }
+  PTOUCHINPUT pInputs = new TOUCHINPUT[cInputs];
+  if (mGesture.GetTouchInputInfo((HTOUCHINPUT)lParam, cInputs, pInputs)) {
+    ret.x = TOUCH_COORD_TO_PIXEL(pInputs[0].x);
+    ret.y = TOUCH_COORD_TO_PIXEL(pInputs[0].y);
+  }
+  delete[] pInputs;
+  // Note that we don't call CloseTouchInputHandle here because we need
+  // to read the touch input info again in OnTouch later.
+  return ret;
+}
+
 bool nsWindow::OnTouch(WPARAM wParam, LPARAM lParam)
 {
   uint32_t cInputs = LOWORD(wParam);
@@ -7190,12 +7238,6 @@ nsWindow::GetInputContext()
     mInputContext.mIMEState.mOpen = IMEState::CLOSED;
   }
   return mInputContext;
-}
-
-nsIMEUpdatePreference
-nsWindow::GetIMEUpdatePreference()
-{
-  return IMEHandler::GetUpdatePreference();
 }
 
 TextEventDispatcherListener*
@@ -7875,18 +7917,26 @@ nsWindow::DealWithPopups(HWND aWnd, UINT aMessage,
   }
 
   // Only need to deal with the last rollup for left mouse down events.
-  NS_ASSERTION(!mLastRollup, "mLastRollup is null");
+  NS_ASSERTION(!nsAutoRollup::GetLastRollup(), "last rollup is null");
 
-  if (nativeMessage == WM_LBUTTONDOWN || nativeMessage == WM_POINTERDOWN) {
-    POINT pt;
-    pt.x = GET_X_LPARAM(aLParam);
-    pt.y = GET_Y_LPARAM(aLParam);
-    ::ClientToScreen(aWnd, &pt);
-    nsIntPoint pos(pt.x, pt.y);
+  if (nativeMessage == WM_TOUCH || nativeMessage == WM_LBUTTONDOWN || nativeMessage == WM_POINTERDOWN) {
+    nsIntPoint pos;
+    if (nativeMessage == WM_TOUCH) {
+      if (nsWindow* win = WinUtils::GetNSWindowPtr(aWnd)) {
+        pos = win->GetTouchCoordinates(aWParam, aLParam);
+      }
+    } else {
+      POINT pt;
+      pt.x = GET_X_LPARAM(aLParam);
+      pt.y = GET_Y_LPARAM(aLParam);
+      ::ClientToScreen(aWnd, &pt);
+      pos = nsIntPoint(pt.x, pt.y);
+    }
 
+    nsIContent* lastRollup;
     consumeRollupEvent =
-      rollupListener->Rollup(popupsToRollup, true, &pos, &mLastRollup);
-    NS_IF_ADDREF(mLastRollup);
+      rollupListener->Rollup(popupsToRollup, true, &pos, &lastRollup);
+    nsAutoRollup::SetLastRollup(lastRollup);
   } else {
     consumeRollupEvent =
       rollupListener->Rollup(popupsToRollup, true, nullptr, nullptr);

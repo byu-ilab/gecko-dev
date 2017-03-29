@@ -92,17 +92,21 @@ mozJSSubScriptLoader::~mozJSSubScriptLoader()
 NS_IMPL_ISUPPORTS(mozJSSubScriptLoader, mozIJSSubScriptLoader)
 
 static void
-ReportError(JSContext* cx, const char* msg)
+ReportError(JSContext* cx, const nsACString& msg)
 {
-    RootedValue exn(cx, JS::StringValue(JS_NewStringCopyZ(cx, msg)));
-    JS_SetPendingException(cx, exn);
+    NS_ConvertUTF8toUTF16 ucMsg(msg);
+
+    RootedValue exn(cx);
+    if (xpc::NonVoidStringToJsval(cx, ucMsg, &exn)) {
+        JS_SetPendingException(cx, exn);
+    }
 }
 
 static void
 ReportError(JSContext* cx, const char* origMsg, nsIURI* uri)
 {
     if (!uri) {
-        ReportError(cx, origMsg);
+        ReportError(cx, nsDependentCString(origMsg));
         return;
     }
 
@@ -114,7 +118,7 @@ ReportError(JSContext* cx, const char* origMsg, nsIURI* uri)
     nsAutoCString msg(origMsg);
     msg.Append(": ");
     msg.Append(spec);
-    ReportError(cx, msg.get());
+    ReportError(cx, msg);
 }
 
 bool
@@ -155,32 +159,29 @@ PrepareScript(nsIURI* uri,
                 return JS::Compile(cx, options, srcBuf, script);
             }
             return JS::CompileForNonSyntacticScope(cx, options, srcBuf, script);
-        } else {
-            AutoObjectVector envChain(cx);
-            if (!JS_IsGlobalObject(targetObj) && !envChain.append(targetObj)) {
-                return false;
-            }
-            return JS::CompileFunction(cx, envChain, options, nullptr, 0, nullptr,
-                                       srcBuf, function);
         }
-    } else {
-        // We only use lazy source when no special encoding is specified because
-        // the lazy source loader doesn't know the encoding.
-        if (!reuseGlobal) {
-            options.setSourceIsLazy(true);
-            if (JS_IsGlobalObject(targetObj)) {
-                return JS::Compile(cx, options, buf, len, script);
-            }
-            return JS::CompileForNonSyntacticScope(cx, options, buf, len, script);
-        } else {
-            AutoObjectVector envChain(cx);
-            if (!JS_IsGlobalObject(targetObj) && !envChain.append(targetObj)) {
-                return false;
-            }
-            return JS::CompileFunction(cx, envChain, options, nullptr, 0, nullptr,
-                                       buf, len, function);
+        AutoObjectVector envChain(cx);
+        if (!JS_IsGlobalObject(targetObj) && !envChain.append(targetObj)) {
+            return false;
         }
+        return JS::CompileFunction(cx, envChain, options, nullptr, 0, nullptr,
+                                   srcBuf, function);
     }
+    // We only use lazy source when no special encoding is specified because
+    // the lazy source loader doesn't know the encoding.
+    if (!reuseGlobal) {
+        options.setSourceIsLazy(true);
+        if (JS_IsGlobalObject(targetObj)) {
+            return JS::Compile(cx, options, buf, len, script);
+        }
+        return JS::CompileForNonSyntacticScope(cx, options, buf, len, script);
+    }
+    AutoObjectVector envChain(cx);
+    if (!JS_IsGlobalObject(targetObj) && !envChain.append(targetObj)) {
+        return false;
+    }
+    return JS::CompileFunction(cx, envChain, options, nullptr, 0, nullptr,
+                               buf, len, function);
 }
 
 bool
@@ -413,12 +414,12 @@ mozJSSubScriptLoader::ReadScriptAsync(nsIURI* uri, JSObject* targetObjArg,
 
     AutoJSAPI jsapi;
     if (NS_WARN_IF(!jsapi.Init(globalObject))) {
-      return NS_ERROR_UNEXPECTED;
+        return NS_ERROR_UNEXPECTED;
     }
 
     RefPtr<Promise> promise = Promise::Create(globalObject, result);
     if (result.Failed()) {
-      promise = nullptr;
+        return result.StealNSResult();
     }
 
     DebugOnly<bool> asJS = ToJSValue(jsapi.cx(), promise, retval);
@@ -623,7 +624,7 @@ mozJSSubScriptLoader::DoLoadSubScriptWithOptions(const nsAString& url,
                           : nullptr;
     nsCOMPtr<nsIIOService> serv = do_GetService(NS_IOSERVICE_CONTRACTID);
     if (!serv) {
-        ReportError(cx, LOAD_ERROR_NOSERVICE);
+        ReportError(cx, NS_LITERAL_CSTRING(LOAD_ERROR_NOSERVICE));
         return NS_OK;
     }
 
@@ -631,13 +632,13 @@ mozJSSubScriptLoader::DoLoadSubScriptWithOptions(const nsAString& url,
     // canonicalized spec.
     rv = NS_NewURI(getter_AddRefs(uri), NS_LossyConvertUTF16toASCII(url).get(), nullptr, serv);
     if (NS_FAILED(rv)) {
-        ReportError(cx, LOAD_ERROR_NOURI);
+        ReportError(cx, NS_LITERAL_CSTRING(LOAD_ERROR_NOURI));
         return NS_OK;
     }
 
     rv = uri->GetSpec(uriStr);
     if (NS_FAILED(rv)) {
-        ReportError(cx, LOAD_ERROR_NOSPEC);
+        ReportError(cx, NS_LITERAL_CSTRING(LOAD_ERROR_NOSPEC));
         return NS_OK;
     }
 
@@ -849,7 +850,6 @@ ScriptPrecompiler::OnStreamComplete(nsIIncrementalStreamLoader* aLoader,
 
     JS::CompileOptions options(cx, JSVERSION_DEFAULT);
     options.forceAsync = true;
-    options.installedFile = true;
 
     nsCOMPtr<nsIURI> uri;
     mChannel->GetURI(getter_AddRefs(uri));

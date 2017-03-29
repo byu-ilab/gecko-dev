@@ -30,6 +30,7 @@
 #include "SVGGraphicsElement.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 using namespace mozilla::gfx;
 using namespace mozilla::image;
 
@@ -49,7 +50,7 @@ NS_IMPL_FRAMEARENA_HELPERS(SVGGeometryFrame)
 // nsQueryFrame methods
 
 NS_QUERYFRAME_HEAD(SVGGeometryFrame)
-  NS_QUERYFRAME_ENTRY(nsISVGChildFrame)
+  NS_QUERYFRAME_ENTRY(nsSVGDisplayableFrame)
   NS_QUERYFRAME_ENTRY(SVGGeometryFrame)
 NS_QUERYFRAME_TAIL_INHERITING(nsFrame)
 
@@ -119,7 +120,7 @@ nsDisplaySVGGeometry::Paint(nsDisplayListBuilder* aBuilder,
   gfxPoint devPixelOffset =
     nsLayoutUtils::PointToGfxPoint(offset, appUnitsPerDevPixel);
 
-  gfxMatrix tm = nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(mFrame) *
+  gfxMatrix tm = nsSVGUtils::GetCSSPxToDevPxMatrix(mFrame) *
                    gfxMatrix::Translation(devPixelOffset);
   DrawResult result =
     static_cast<SVGGeometryFrame*>(mFrame)->PaintSVG(*aCtx->ThebesContext(), tm);
@@ -274,7 +275,7 @@ SVGGeometryFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 }
 
 //----------------------------------------------------------------------
-// nsISVGChildFrame methods
+// nsSVGDisplayableFrame methods
 
 DrawResult
 SVGGeometryFrame::PaintSVG(gfxContext& aContext,
@@ -284,16 +285,9 @@ SVGGeometryFrame::PaintSVG(gfxContext& aContext,
   if (!StyleVisibility()->IsVisible())
     return DrawResult::SUCCESS;
 
-  gfxMatrix childToUserSpace = aTransform;
-  if (GetContent()->IsSVGElement()) {
-    childToUserSpace = static_cast<const nsSVGElement*>(GetContent())->
-                         PrependLocalTransformsTo(childToUserSpace,
-                                                  eChildToUserSpace);
-  }
-
   // Matrix to the geometry's user space:
   gfxMatrix newMatrix =
-    aContext.CurrentMatrix().PreMultiply(childToUserSpace).NudgeToIntegers();
+    aContext.CurrentMatrix().PreMultiply(aTransform).NudgeToIntegers();
   if (newMatrix.IsSingular()) {
     return DrawResult::BAD_ARGS;
   }
@@ -714,7 +708,7 @@ SVGGeometryFrame::GetCanvasTM()
   NS_ASSERTION(GetParent(), "null parent");
 
   nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(GetParent());
-  dom::SVGGraphicsElement *content = static_cast<dom::SVGGraphicsElement*>(mContent);
+  SVGGraphicsElement *content = static_cast<SVGGraphicsElement*>(mContent);
 
   return content->PrependLocalTransformsTo(parent->GetCanvasTM());
 }

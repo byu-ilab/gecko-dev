@@ -51,6 +51,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
     }
 
     private final class InputProcessor {
+        private static final int FEW_PENDING_INPUTS = 2;
         private boolean mHasInputCapacitySet;
         private Queue<Integer> mAvailableInputBuffers = new LinkedList<>();
         private Queue<Sample> mDequeuedSamples = new LinkedList<>();
@@ -65,22 +66,35 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
         private synchronized void onSample(Sample sample) {
             if (sample == null) {
-                Log.w(LOGTAG, "WARN: null input sample");
+                // Ignore empty input.
+                mSamplePool.recycleInput(mDequeuedSamples.remove());
+                Log.w(LOGTAG, "WARN: empty input sample");
                 return;
             }
 
-            if (!sample.isEOS()) {
-                Sample temp = sample;
-                sample = mDequeuedSamples.remove();
-                sample.info = temp.info;
-                sample.cryptoInfo = temp.cryptoInfo;
-                temp.dispose();
+            if (sample.isEOS()) {
+                queueSample(sample);
+                return;
             }
 
-            if (mInputSamples.offer(sample)) {
-                feedSampleToBuffer();
-            } else {
+            Sample dequeued = mDequeuedSamples.remove();
+            dequeued.info = sample.info;
+            dequeued.cryptoInfo = sample.cryptoInfo;
+            queueSample(dequeued);
+
+            sample.dispose();
+        }
+
+        private void queueSample(Sample sample) {
+            if (!mInputSamples.offer(sample)) {
                 reportError(Error.FATAL, new Exception("FAIL: input sample queue is full"));
+                return;
+            }
+
+            try {
+                feedSampleToBuffer();
+            } catch (Exception e) {
+                reportError(Error.FATAL, e);
             }
         }
 
@@ -118,19 +132,26 @@ import java.util.concurrent.ConcurrentLinkedQueue;
                     ByteBuffer buf = mCodec.getInputBuffer(index);
                     try {
                         sample.writeToByteBuffer(buf);
-                        mCallbacks.onInputExhausted();
                     } catch (IOException e) {
                         e.printStackTrace();
-                    } catch (RemoteException e) {
-                        e.printStackTrace();
+                        len = 0;
                     }
                     mSamplePool.recycleInput(sample);
                 }
 
-                if (cryptoInfo != null) {
+                if (cryptoInfo != null && len > 0) {
                     mCodec.queueSecureInputBuffer(index, 0, cryptoInfo, pts, flags);
                 } else {
                     mCodec.queueInputBuffer(index, 0, len, pts, flags);
+                }
+            }
+            // To avoid input queue flood, request more input samples only when
+            // there are just a few waiting to be processed.
+            if (mDequeuedSamples.size() + mInputSamples.size() <= FEW_PENDING_INPUTS) {
+                try {
+                    mCallbacks.onInputExhausted();
+                } catch (RemoteException e) {
+                    e.printStackTrace();
                 }
             }
         }
@@ -183,13 +204,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
                 return;
             }
 
-            Sample output = obtainOutputSample(index, info);
             try {
+                Sample output = obtainOutputSample(index, info);
                 mSentIndices.add(index);
                 mSentOutputs.add(output);
                 mCallbacks.onOutput(output);
-            } catch (RemoteException e) {
-                // Dead recipient.
+            } catch (Exception e) {
                 e.printStackTrace();
                 mCodec.releaseOutputBuffer(index, false);
             }
@@ -369,10 +389,11 @@ import java.util.concurrent.ConcurrentLinkedQueue;
     }
 
     private void releaseCodec() {
-        // In case Codec.stop() is not called yet.
-        mInputProcessor.stop();
-        mOutputProcessor.stop();
         try {
+            // In case Codec.stop() is not called yet.
+            mInputProcessor.stop();
+            mOutputProcessor.stop();
+
             mCodec.release();
         } catch (Exception e) {
             reportError(Error.FATAL, e);
@@ -430,9 +451,10 @@ import java.util.concurrent.ConcurrentLinkedQueue;
     @Override
     public synchronized void stop() throws RemoteException {
         if (DEBUG) { Log.d(LOGTAG, "stop " + this); }
-        mInputProcessor.stop();
-        mOutputProcessor.stop();
         try {
+            mInputProcessor.stop();
+            mOutputProcessor.stop();
+
             mCodec.stop();
         } catch (Exception e) {
             reportError(Error.FATAL, e);
@@ -442,9 +464,10 @@ import java.util.concurrent.ConcurrentLinkedQueue;
     @Override
     public synchronized void flush() throws RemoteException {
         if (DEBUG) { Log.d(LOGTAG, "flush " + this); }
-        mInputProcessor.stop();
-        mOutputProcessor.stop();
         try {
+            mInputProcessor.stop();
+            mOutputProcessor.stop();
+
             mCodec.flush();
             if (DEBUG) { Log.d(LOGTAG, "flushed " + this); }
             mInputProcessor.start();
@@ -456,8 +479,13 @@ import java.util.concurrent.ConcurrentLinkedQueue;
     }
 
     @Override
-    public synchronized Sample dequeueInput(int size) {
-        return mInputProcessor.onAllocate(size);
+    public synchronized Sample dequeueInput(int size) throws RemoteException {
+        try {
+            return mInputProcessor.onAllocate(size);
+        } catch (Exception e) {
+            // Translate allocation error to remote exception.
+            throw new RemoteException(e.getMessage());
+        }
     }
 
     @Override
@@ -467,7 +495,11 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
     @Override
     public synchronized void releaseOutput(Sample sample, boolean render) {
-        mOutputProcessor.onRelease(sample, render);
+        try {
+            mOutputProcessor.onRelease(sample, render);
+        } catch (Exception e) {
+            reportError(Error.FATAL, e);
+        }
     }
 
     @Override

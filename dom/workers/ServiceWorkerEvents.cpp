@@ -190,7 +190,7 @@ public:
     NS_ENSURE_TRUE(underlyingChannel, NS_ERROR_UNEXPECTED);
     nsCOMPtr<nsILoadInfo> loadInfo = underlyingChannel->GetLoadInfo();
 
-    if (!CSPPermitsResponse(loadInfo)) {
+    if (!loadInfo || !CSPPermitsResponse(loadInfo)) {
       mChannel->Cancel(NS_ERROR_CONTENT_BLOCKED);
       return NS_OK;
     }
@@ -658,7 +658,7 @@ RespondWithHandler::ResolvedCallback(JSContext* aCx, JS::Handle<JS::Value> aValu
 
     nsCOMPtr<nsIOutputStream> responseBody;
     rv = mInterceptedChannel->GetResponseBody(getter_AddRefs(responseBody));
-    if (NS_WARN_IF(NS_FAILED(rv))) {
+    if (NS_WARN_IF(NS_FAILED(rv)) || !responseBody) {
       return;
     }
 
@@ -1191,7 +1191,8 @@ ExtendableMessageEvent::GetSource(Nullable<OwningClientOrServiceWorkerOrMessageP
   } else if (mMessagePort) {
     aValue.SetValue().SetAsMessagePort() = mMessagePort;
   } else {
-    MOZ_CRASH("Unexpected source value");
+    // nullptr source is possible for manually constructed event
+    aValue.SetNull();
   }
 }
 

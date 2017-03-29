@@ -138,6 +138,12 @@ const SNAPSHOT_SCHEMA = {
         numRemoteWindows: {
           type: "number",
         },
+        keyGoogleFound: {
+          type: "boolean",
+        },
+        keyMozillaFound: {
+          type: "boolean",
+        },
         safeMode: {
           type: "boolean",
         },
@@ -195,6 +201,27 @@ const SNAPSHOT_SCHEMA = {
           isActive: {
             required: true,
             type: "boolean",
+          },
+        },
+      },
+    },
+    features: {
+      required: true,
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          name: {
+            required: true,
+            type: "string",
+          },
+          version: {
+            required: true,
+            type: "string",
+          },
+          id: {
+            required: true,
+            type: "string",
           },
         },
       },
@@ -300,6 +327,9 @@ const SNAPSHOT_SCHEMA = {
         webgl1Version: {
           type: "string",
         },
+        webgl1DriverExtensions: {
+          type: "string",
+        },
         webgl1Extensions: {
           type: "string",
         },
@@ -310,6 +340,9 @@ const SNAPSHOT_SCHEMA = {
           type: "string",
         },
         webgl2Version: {
+          type: "string",
+        },
+        webgl2DriverExtensions: {
           type: "string",
         },
         webgl2Extensions: {
@@ -487,6 +520,42 @@ const SNAPSHOT_SCHEMA = {
           required: AppConstants.MOZ_CONTENT_SANDBOX,
           type: "number"
         },
+	syscallLog: {
+	  required: AppConstants.platform == "linux",
+	  type: "array",
+	  items: {
+	    type: "object",
+	    properties: {
+	      index: {
+		required: true,
+		type: "number",
+	      },
+	      pid: {
+		required: true,
+		type: "number",
+	      },
+	      tid: {
+		required: true,
+		type: "number",
+	      },
+	      procType: {
+		required: true,
+		type: "string",
+	      },
+	      syscall: {
+		required: true,
+		type: "number",
+	      },
+	      args: {
+		required: true,
+		type: "array",
+		items: {
+		  type: "string",
+		},
+	      },
+	    },
+	  },
+	},
       },
     },
   },

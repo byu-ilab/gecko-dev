@@ -282,7 +282,8 @@ public:
   {
     // Contrary to CompositorOGL, we allow unaccelerated OpenGL contexts to be
     // used. BasicCompositor only requires very basic GL functionality.
-    RefPtr<GLContext> context = gl::GLContextProvider::CreateForWindow(aWindow, false);
+    bool forWebRender = false;
+    RefPtr<GLContext> context = gl::GLContextProvider::CreateForWindow(aWindow, forWebRender, false);
     return context ? MakeUnique<GLPresenter>(context) : nullptr;
   }
 
@@ -1892,15 +1893,6 @@ nsChildView::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
   return keyBindings->Execute(aEvent, aCallback, aCallbackData);
 }
 
-nsIMEUpdatePreference
-nsChildView::GetIMEUpdatePreference()
-{
-  // XXX Shouldn't we move floating window which shows composition string
-  //     when plugin has focus and its parent is scrolled or the window is
-  //     moved?
-  return nsIMEUpdatePreference();
-}
-
 NSView<mozView>* nsChildView::GetEditorView()
 {
   NSView<mozView>* editorView = mView;
@@ -2027,7 +2019,8 @@ bool
 nsChildView::PreRender(WidgetRenderingContext* aContext)
 {
   UniquePtr<GLManager> manager(GLManager::CreateGLManager(aContext->mLayerManager));
-  if (!manager) {
+  gl::GLContext* gl = manager ? manager->gl() : aContext->mGL;
+  if (!gl) {
     return true;
   }
 
@@ -2036,7 +2029,7 @@ nsChildView::PreRender(WidgetRenderingContext* aContext)
   // composition is done, thus keeping the GL context locked forever.
   mViewTearDownLock.Lock();
 
-  NSOpenGLContext *glContext = GLContextCGL::Cast(manager->gl())->GetNSOpenGLContext();
+  NSOpenGLContext *glContext = GLContextCGL::Cast(gl)->GetNSOpenGLContext();
 
   if (![(ChildView*)mView preRender:glContext]) {
     mViewTearDownLock.Unlock();
@@ -2049,10 +2042,11 @@ void
 nsChildView::PostRender(WidgetRenderingContext* aContext)
 {
   UniquePtr<GLManager> manager(GLManager::CreateGLManager(aContext->mLayerManager));
-  if (!manager) {
+  gl::GLContext* gl = manager ? manager->gl() : aContext->mGL;
+  if (!gl) {
     return;
   }
-  NSOpenGLContext *glContext = GLContextCGL::Cast(manager->gl())->GetNSOpenGLContext();
+  NSOpenGLContext *glContext = GLContextCGL::Cast(gl)->GetNSOpenGLContext();
   [(ChildView*)mView postRender:glContext];
   mViewTearDownLock.Unlock();
 }
@@ -5686,7 +5680,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
     if (aMessage == eDragOver) {
       // fire the drag event at the source. Just ignore whether it was
       // cancelled or not as there isn't actually a means to stop the drag
-      mDragService->FireDragEventAtSource(eDrag);
+      mDragService->FireDragEventAtSource(
+        eDrag, nsCocoaUtils::ModifiersForEvent([NSApp currentEvent]));
       dragSession->SetCanDrop(false);
     } else if (aMessage == eDrop) {
       // We make the assumption that the dragOver handlers have correctly set
@@ -5698,7 +5693,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
         nsCOMPtr<nsIDOMNode> sourceNode;
         dragSession->GetSourceNode(getter_AddRefs(sourceNode));
         if (!sourceNode) {
-          mDragService->EndDragSession(false);
+          mDragService->EndDragSession(
+            false, nsCocoaUtils::ModifiersForEvent([NSApp currentEvent]));
         }
         return NSDragOperationNone;
       }
@@ -5759,7 +5755,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
           // initiated in a different app. End the drag session,
           // since we're done with it for now (until the user
           // drags back into mozilla).
-          mDragService->EndDragSession(false);
+          mDragService->EndDragSession(
+            false, nsCocoaUtils::ModifiersForEvent([NSApp currentEvent]));
         }
       }
       default:
@@ -5876,7 +5873,8 @@ GetIntegerDeltaForEvent(NSEvent* aEvent)
         dataTransfer->SetDropEffectInt(nsIDragService::DRAGDROP_ACTION_NONE);
     }
 
-    mDragService->EndDragSession(true);
+    mDragService->EndDragSession(
+      true, nsCocoaUtils::ModifiersForEvent(currentEvent));
     NS_RELEASE(mDragService);
   }
 

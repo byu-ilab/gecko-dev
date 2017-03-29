@@ -7,9 +7,9 @@
 // window or from the SSL error page (see bug 461627).
 
 function test() {
-  const EXCEPTIONS_DLG_URL = 'chrome://pippki/content/exceptionDialog.xul';
-  const EXCEPTIONS_DLG_FEATURES = 'chrome,centerscreen';
-  const INVALID_CERT_LOCATION = 'https://nocert.example.com/';
+  const EXCEPTIONS_DLG_URL = "chrome://pippki/content/exceptionDialog.xul";
+  const EXCEPTIONS_DLG_FEATURES = "chrome,centerscreen";
+  const INVALID_CERT_LOCATION = "https://nocert.example.com/";
   waitForExplicitFinish();
 
   // open a private browsing window
@@ -21,7 +21,7 @@ function test() {
   // Test the certificate exceptions dialog
   function doTest() {
     let params = {
-      exceptionAdded : false,
+      exceptionAdded: false,
       location: INVALID_CERT_LOCATION,
       prefetchCert: true,
     };

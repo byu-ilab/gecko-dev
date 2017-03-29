@@ -30,12 +30,12 @@ extensions.on("manifest_chrome_url_overrides", (type, directive, extension, mani
       aboutNewTabService.newTabURL = url;
     }
 
-    overrides.newtab.push({extension, url});
+    overrides.newtab.push({id: extension.id, url});
   }
 });
 
 extensions.on("shutdown", (type, extension) => {
-  let i = overrides.newtab.findIndex(o => o.extension === extension);
+  let i = overrides.newtab.findIndex(o => o.id === extension.id);
   if (i !== -1) {
     overrides.newtab.splice(i, 1);
 

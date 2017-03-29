@@ -74,6 +74,7 @@ pref("devtools.layoutview.enabled", false);
 
 // Grid highlighter preferences
 pref("devtools.gridinspector.showGridLineNumbers", false);
+pref("devtools.gridinspector.showGridOutline", false);
 pref("devtools.gridinspector.showInfiniteLines", false);
 
 // By how many times eyedropper will magnify pixels
@@ -300,8 +301,15 @@ pref("devtools.webconsole.new-frontend-enabled", true);
 pref("devtools.webconsole.new-frontend-enabled", false);
 #endif
 
-// Enable the experimental support for source maps in console (work in progress)
-pref("devtools.sourcemap.locations.enabled", false);
+// Enable the server-side mapping service for source maps in console (deprecated)
+// NOTE: This approach to source maps uses server-side source maps, which we are
+// replacing with client-side source maps.  Do not use this in new code paths.
+// To be removed in bug 1349354.  Read more about ongoing work with source maps:
+// https://docs.google.com/document/d/19TKnMJD3CMBzwByNE4aBBVWnl-AEan8Sf4hxi6J-eps/edit
+pref("devtools.source-map.locations.enabled", false);
+
+// Enable client-side mapping service for source maps
+pref("devtools.source-map.client-service.enabled", true);
 
 // The number of lines that are displayed in the web console.
 pref("devtools.hud.loglimit", 1000);

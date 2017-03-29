@@ -378,7 +378,7 @@ mozJSComponentLoader::LoadModule(FileLocation& aFile)
 
     ModuleEntry* mod;
     if (mModules.Get(spec, &mod))
-    return mod;
+        return mod;
 
     dom::AutoJSAPI jsapi;
     jsapi.Init();
@@ -562,7 +562,7 @@ mozJSComponentLoader::PrepareObjectForLocation(JSContext* aCx,
         CompartmentOptions options;
 
         options.creationOptions()
-               .setZone(SystemZone)
+               .setSystemZone()
                .setAddonId(aReuseLoaderGlobal ? nullptr : MapURIToAddonID(aURI));
 
         options.behaviors().setVersion(JSVERSION_LATEST);

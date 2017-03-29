@@ -917,6 +917,11 @@ const RolloutPolicy = {
   "51set3": { addonsv2: set51Release, installs:  300, webextensions: true, mpc: true },
   "51set4": { addonsv2: set51Release, installs: 1000, webextensions: true, mpc: true },
 
+  // ESR
+  "esrA": { addons: [], mpc: true, webextensions: true },
+  "esrB": { addons: [], mpc: true, webextensions: false },
+  "esrC": { addons: [], mpc: false, webextensions: true },
+
   "xpcshell-test": { addons: [ADDONS.test1, ADDONS.test2], webextensions: false },
 };
 
@@ -946,7 +951,7 @@ Object.defineProperty(this, "isAddonPartOfE10SRollout", {
       return true;
     }
 
-    if (policy.webextensions && aAddon.type == "webextension") {
+    if (policy.webextensions && (aAddon.type == "webextension" || aAddon.type == "webextension-theme")) {
       return true;
     }
 

@@ -42,8 +42,8 @@ class LayerTransactionParent final : public PLayerTransactionParent,
   typedef mozilla::layout::RenderFrameParent RenderFrameParent;
   typedef InfallibleTArray<Edit> EditArray;
   typedef InfallibleTArray<OpDestroy> OpDestroyArray;
-  typedef InfallibleTArray<EditReply> EditReplyArray;
   typedef InfallibleTArray<PluginWindowData> PluginsArray;
+  typedef InfallibleTArray<ReadLockInit> ReadLockArray;
 
 public:
   LayerTransactionParent(HostLayerManager* aManager,
@@ -112,10 +112,8 @@ protected:
   virtual mozilla::ipc::IPCResult RecvPaintTime(const uint64_t& aTransactionId,
                                                 const TimeDuration& aPaintTime) override;
 
-  virtual mozilla::ipc::IPCResult RecvUpdate(const TransactionInfo& aInfo,
-                                             EditReplyArray* reply) override;
-
-  virtual mozilla::ipc::IPCResult RecvUpdateNoSwap(const TransactionInfo& aInfo) override;
+  virtual mozilla::ipc::IPCResult RecvInitReadLocks(ReadLockArray&& aReadLocks) override;
+  virtual mozilla::ipc::IPCResult RecvUpdate(const TransactionInfo& aInfo) override;
 
   virtual mozilla::ipc::IPCResult RecvSetLayerObserverEpoch(const uint64_t& aLayerObserverEpoch) override;
   virtual mozilla::ipc::IPCResult RecvNewCompositable(const CompositableHandle& aHandle,
@@ -127,10 +125,10 @@ protected:
   virtual mozilla::ipc::IPCResult RecvForceComposite() override;
   virtual mozilla::ipc::IPCResult RecvSetTestSampleTime(const TimeStamp& aTime) override;
   virtual mozilla::ipc::IPCResult RecvLeaveTestMode() override;
-  virtual mozilla::ipc::IPCResult RecvGetAnimationOpacity(const LayerHandle& aLayerHandle,
+  virtual mozilla::ipc::IPCResult RecvGetAnimationOpacity(const uint64_t& aCompositorAnimationsId,
                                                           float* aOpacity,
                                                           bool* aHasAnimationOpacity) override;
-  virtual mozilla::ipc::IPCResult RecvGetAnimationTransform(const LayerHandle& aLayerHandle,
+  virtual mozilla::ipc::IPCResult RecvGetAnimationTransform(const uint64_t& aCompositorAnimationsId,
                                                             MaybeTransform* aTransform)
                                          override;
   virtual mozilla::ipc::IPCResult RecvSetAsyncScrollOffset(const FrameMetrics::ViewID& aId,

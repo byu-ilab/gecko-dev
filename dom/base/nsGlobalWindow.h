@@ -122,6 +122,9 @@ enum class ImageBitmapFormat : uint8_t;
 class IdleRequest;
 class IdleRequestCallback;
 class IncrementalRunnable;
+#ifdef ENABLE_INTL_API
+class IntlUtils;
+#endif
 class Location;
 class MediaQueryList;
 class MozSelfSupport;
@@ -292,6 +295,10 @@ public:
     return static_cast<nsGlobalWindow*>(
                         reinterpret_cast<nsPIDOMWindow<nsISupports>*>(aPIWin));
   }
+  static const nsGlobalWindow* Cast(const nsPIDOMWindowOuter* aPIWin) {
+    return static_cast<const nsGlobalWindow*>(
+                        reinterpret_cast<const nsPIDOMWindow<nsISupports>*>(aPIWin));
+  }
   static nsGlobalWindow* Cast(mozIDOMWindowProxy* aWin) {
     return Cast(nsPIDOMWindowOuter::From(aWin));
   }
@@ -390,13 +397,13 @@ public:
   virtual already_AddRefed<nsISupports> SaveWindowState() override;
   virtual nsresult RestoreWindowState(nsISupports *aState) override;
 
-  virtual void Suspend();
-  virtual void Resume();
+  void Suspend();
+  void Resume();
   virtual bool IsSuspended() const override;
-  virtual void Freeze();
-  virtual void Thaw();
+  void Freeze();
+  void Thaw();
   virtual bool IsFrozen() const override;
-  virtual void SyncStateFromParentWindow();
+  void SyncStateFromParentWindow();
 
   virtual nsresult FireDelayedDOMEvents() override;
 
@@ -448,6 +455,7 @@ public:
   // Inner windows only.
   virtual void SetHasGamepadEventListener(bool aHasGamepad = true) override;
   void NotifyVREventListenerAdded();
+  bool HasUsedVR() const;
   virtual void EventListenerAdded(nsIAtom* aType) override;
 
   // nsIInterfaceRequestor
@@ -741,6 +749,7 @@ public:
   void SetHasSeenGamepadInput(bool aHasSeen);
   bool HasSeenGamepadInput();
   void SyncGamepadState();
+  void StopGamepadHaptics();
 
   // Inner windows only.
   // Enable/disable updates for gamepad input.
@@ -759,10 +768,18 @@ public:
   // Called to inform that the set of active VR displays has changed.
   void NotifyActiveVRDisplaysChanged();
 
+  // Outer windows only.
+  uint32_t GetAutoActivateVRDisplayID();
+  // Outer windows only.
+  void SetAutoActivateVRDisplayID(uint32_t aAutoActivateVRDisplayID);
+
   void DispatchVRDisplayActivate(uint32_t aDisplayID,
                                  mozilla::dom::VRDisplayEventReason aReason);
   void DispatchVRDisplayDeactivate(uint32_t aDisplayID,
                                    mozilla::dom::VRDisplayEventReason aReason);
+  void DispatchVRDisplayConnect(uint32_t aDisplayID);
+  void DispatchVRDisplayDisconnect(uint32_t aDisplayID);
+  void DispatchVRDisplayPresentChange(uint32_t aDisplayID);
 
 #define EVENT(name_, id_, type_, struct_)                                     \
   mozilla::dom::EventHandlerNonNull* GetOn##name_()                           \
@@ -939,6 +956,14 @@ public:
   mozilla::dom::Worklet*
   GetPaintWorklet(mozilla::ErrorResult& aRv);
 
+  void
+  GetAppLocalesAsBCP47(nsTArray<nsString>& aLocales);
+
+#ifdef ENABLE_INTL_API
+  mozilla::dom::IntlUtils*
+  GetIntlUtils(mozilla::ErrorResult& aRv);
+#endif
+
 protected:
   bool AlertOrConfirm(bool aAlert, const nsAString& aMessage,
                       nsIPrincipal& aSubjectPrincipal,
@@ -982,7 +1007,7 @@ public:
                        mozilla::ErrorResult& aError);
   void PostMessageMoz(JSContext* aCx, JS::Handle<JS::Value> aMessage,
                       const nsAString& aTargetOrigin,
-                      const mozilla::dom::Optional<mozilla::dom::Sequence<JS::Value > >& aTransfer,
+                      const mozilla::dom::Sequence<JSObject*>& aTransfer,
                       nsIPrincipal& aSubjectPrincipal,
                       mozilla::ErrorResult& aError);
   int32_t SetTimeout(JSContext* aCx, mozilla::dom::Function& aFunction,
@@ -1003,6 +1028,7 @@ public:
                       const mozilla::dom::Sequence<JS::Value>& /* unused */,
                       mozilla::ErrorResult& aError);
   void ClearInterval(int32_t aHandle);
+  void GetOrigin(nsAString& aOrigin);
   void Atob(const nsAString& aAsciiBase64String, nsAString& aBinaryData,
             mozilla::ErrorResult& aError);
   void Btoa(const nsAString& aBinaryData, nsAString& aAsciiBase64String,
@@ -1070,15 +1096,15 @@ public:
   void SetInnerHeight(JSContext* aCx, JS::Handle<JS::Value> aValue,
                       mozilla::dom::CallerType aCallerType,
                       mozilla::ErrorResult& aError);
-  int32_t GetScrollXOuter();
-  int32_t GetScrollX(mozilla::ErrorResult& aError);
-  int32_t GetPageXOffset(mozilla::ErrorResult& aError)
+  double GetScrollXOuter();
+  double GetScrollX(mozilla::ErrorResult& aError);
+  double GetPageXOffset(mozilla::ErrorResult& aError)
   {
     return GetScrollX(aError);
   }
-  int32_t GetScrollYOuter();
-  int32_t GetScrollY(mozilla::ErrorResult& aError);
-  int32_t GetPageYOffset(mozilla::ErrorResult& aError)
+  double GetScrollYOuter();
+  double GetScrollY(mozilla::ErrorResult& aError);
+  double GetPageYOffset(mozilla::ErrorResult& aError)
   {
     return GetScrollY(aError);
   }
@@ -1226,16 +1252,19 @@ public:
   }
 
   already_AddRefed<mozilla::dom::Promise>
-  CreateImageBitmap(const mozilla::dom::ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const mozilla::dom::ImageBitmapSource& aImage,
                     mozilla::ErrorResult& aRv);
 
   already_AddRefed<mozilla::dom::Promise>
-  CreateImageBitmap(const mozilla::dom::ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const mozilla::dom::ImageBitmapSource& aImage,
                     int32_t aSx, int32_t aSy, int32_t aSw, int32_t aSh,
                     mozilla::ErrorResult& aRv);
 
   already_AddRefed<mozilla::dom::Promise>
-  CreateImageBitmap(const mozilla::dom::ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const mozilla::dom::ImageBitmapSource& aImage,
                     int32_t aOffset, int32_t aLength,
                     mozilla::dom::ImageBitmapFormat aFormat,
                     const mozilla::dom::Sequence<mozilla::dom::ChannelPixelLayout>& aLayout,
@@ -1615,7 +1644,7 @@ public:
   // If aDoFlush is true, we'll flush our own layout; otherwise we'll try to
   // just flush our parent and only flush ourselves if we think we need to.
   // Outer windows only.
-  mozilla::CSSIntPoint GetScrollXY(bool aDoFlush);
+  mozilla::CSSPoint GetScrollXY(bool aDoFlush);
 
   int32_t GetScrollBoundaryOuter(mozilla::Side aSide);
 
@@ -1796,11 +1825,13 @@ public:
   AbstractMainThreadFor(mozilla::TaskCategory aCategory) override;
 
   void DisableIdleCallbackRequests();
-  uint32_t IdleRequestHandle() const { return mIdleRequestCallbackCounter; }
+  uint32_t LastIdleRequestHandle() const { return mIdleRequestCallbackCounter - 1; }
   nsresult RunIdleRequest(mozilla::dom::IdleRequest* aRequest,
                           DOMHighResTimeStamp aDeadline, bool aDidTimeout);
   nsresult ExecuteIdleRequest(TimeStamp aDeadline);
   void ScheduleIdleRequestDispatch();
+  void SuspendIdleRequests();
+  void ResumeIdleRequests();
 
   typedef mozilla::LinkedList<mozilla::dom::IdleRequest> IdleRequests;
   void InsertIdleCallback(mozilla::dom::IdleRequest* aRequest);
@@ -1935,9 +1966,6 @@ protected:
   // These member variables are used on both inner and the outer windows.
   nsCOMPtr<nsIPrincipal> mDocumentPrincipal;
 
-  typedef nsTArray<RefPtr<mozilla::dom::StorageEvent>> nsStorageEventArray;
-  nsStorageEventArray mPendingStorageEvents;
-
   uint32_t mSuspendDepth;
   uint32_t mFreezeDepth;
 
@@ -2019,7 +2047,16 @@ protected:
   // The VR Displays for this window
   nsTArray<RefPtr<mozilla::dom::VRDisplay>> mVRDisplays;
 
-  nsAutoPtr<mozilla::dom::VREventObserver> mVREventObserver;
+  RefPtr<mozilla::dom::VREventObserver> mVREventObserver;
+
+  // When non-zero, the document should receive a vrdisplayactivate event
+  // after loading.  The value is the ID of the VRDisplay that content should
+  // begin presentation on.
+  uint32_t mAutoActivateVRDisplayID; // Outer windows only
+
+#ifdef ENABLE_INTL_API
+  RefPtr<mozilla::dom::IntlUtils> mIntlUtils;
+#endif
 
   friend class nsDOMScriptableHelper;
   friend class nsDOMWindowUtils;

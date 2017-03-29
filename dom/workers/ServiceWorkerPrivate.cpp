@@ -532,7 +532,7 @@ public:
 nsresult
 ServiceWorkerPrivate::SendMessageEvent(JSContext* aCx,
                                        JS::Handle<JS::Value> aMessage,
-                                       const Optional<Sequence<JS::Value>>& aTransferable,
+                                       const Sequence<JSObject*>& aTransferable,
                                        UniquePtr<ServiceWorkerClientInfo>&& aClientInfo)
 {
   AssertIsOnMainThread();
@@ -543,17 +543,13 @@ ServiceWorkerPrivate::SendMessageEvent(JSContext* aCx,
   }
 
   JS::Rooted<JS::Value> transferable(aCx, JS::UndefinedHandleValue);
-  if (aTransferable.WasPassed()) {
-    const Sequence<JS::Value>& value = aTransferable.Value();
-    JS::HandleValueArray elements =
-      JS::HandleValueArray::fromMarkedLocation(value.Length(), value.Elements());
 
-    JSObject* array = JS_NewArrayObject(aCx, elements);
-    if (!array) {
-      return NS_ERROR_OUT_OF_MEMORY;
-    }
-    transferable.setObject(*array);
+  rv = nsContentUtils::CreateJSValueFromSequenceOfObject(aCx, aTransferable,
+                                                         &transferable);
+  if (NS_WARN_IF(rv.Failed())) {
+    return rv.StealNSResult();
   }
+
   RefPtr<KeepAliveToken> token = CreateEventKeepAliveToken();
   RefPtr<SendMesssageEventRunnable> runnable =
     new SendMesssageEventRunnable(mWorkerPrivate, token, Move(aClientInfo));
@@ -1379,14 +1375,17 @@ public:
     nsCOMPtr<nsILoadInfo> loadInfo;
     rv = channel->GetLoadInfo(getter_AddRefs(loadInfo));
     NS_ENSURE_SUCCESS(rv, rv);
+    NS_ENSURE_STATE(loadInfo);
     mContentPolicyType = loadInfo->InternalContentPolicyType();
+
 
     nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(channel);
     MOZ_ASSERT(httpChannel, "How come we don't have an HTTP channel?");
 
     nsAutoCString referrer;
     // Ignore the return value since the Referer header may not exist.
-    httpChannel->GetRequestHeader(NS_LITERAL_CSTRING("Referer"), referrer);
+    Unused << httpChannel->GetRequestHeader(NS_LITERAL_CSTRING("Referer"),
+                                            referrer);
     if (!referrer.IsEmpty()) {
       mReferrer = referrer;
     } else {
@@ -1441,15 +1440,18 @@ public:
 
     // This is safe due to static_asserts in ServiceWorkerManager.cpp.
     uint32_t redirectMode;
-    internalChannel->GetRedirectMode(&redirectMode);
+    rv = internalChannel->GetRedirectMode(&redirectMode);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
     mRequestRedirect = static_cast<RequestRedirect>(redirectMode);
 
     // This is safe due to static_asserts in ServiceWorkerManager.cpp.
     uint32_t cacheMode;
-    internalChannel->GetFetchCacheMode(&cacheMode);
+    rv = internalChannel->GetFetchCacheMode(&cacheMode);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
     mCacheMode = static_cast<RequestCache>(cacheMode);
 
-    internalChannel->GetIntegrityMetadata(mIntegrity);
+    rv = internalChannel->GetIntegrityMetadata(mIntegrity);
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
 
     mRequestCredentials = InternalRequest::MapChannelToRequestCredentials(channel);
 
@@ -1459,17 +1461,10 @@ public:
     nsCOMPtr<nsIUploadChannel2> uploadChannel = do_QueryInterface(httpChannel);
     if (uploadChannel) {
       MOZ_ASSERT(!mUploadStream);
-      bool bodyHasHeaders = false;
-      rv = uploadChannel->GetUploadStreamHasHeaders(&bodyHasHeaders);
-      NS_ENSURE_SUCCESS(rv, rv);
       nsCOMPtr<nsIInputStream> uploadStream;
       rv = uploadChannel->CloneUploadStream(getter_AddRefs(uploadStream));
       NS_ENSURE_SUCCESS(rv, rv);
-      if (bodyHasHeaders) {
-        HandleBodyWithHeaders(uploadStream);
-      } else {
-        mUploadStream = uploadStream;
-      }
+      mUploadStream = uploadStream;
     }
 
     return NS_OK;
@@ -1585,7 +1580,8 @@ private:
     nsresult rv2 =
       DispatchExtendableEventOnWorkerScope(aCx, aWorkerPrivate->GlobalScope(),
                                            event, nullptr);
-    if (NS_WARN_IF(NS_FAILED(rv2)) || !event->WaitToRespond()) {
+    if ((NS_WARN_IF(NS_FAILED(rv2)) && rv2 != NS_ERROR_XPC_JS_THREW_EXCEPTION) ||
+        !event->WaitToRespond()) {
       nsCOMPtr<nsIRunnable> runnable;
       MOZ_ASSERT(!aWorkerPrivate->UsesSystemPrincipal(),
                  "We don't support system-principal serviceworkers");
@@ -1601,52 +1597,6 @@ private:
     }
 
     return true;
-  }
-
-  nsresult
-  HandleBodyWithHeaders(nsIInputStream* aUploadStream)
-  {
-    // We are dealing with an nsMIMEInputStream which uses string input streams
-    // under the hood, so all of the data is available synchronously.
-    bool nonBlocking = false;
-    nsresult rv = aUploadStream->IsNonBlocking(&nonBlocking);
-    NS_ENSURE_SUCCESS(rv, rv);
-    if (NS_WARN_IF(!nonBlocking)) {
-      return NS_ERROR_NOT_AVAILABLE;
-    }
-    nsAutoCString body;
-    rv = NS_ConsumeStream(aUploadStream, UINT32_MAX, body);
-    NS_ENSURE_SUCCESS(rv, rv);
-
-    // Extract the headers in the beginning of the buffer
-    nsAutoCString::const_iterator begin, end;
-    body.BeginReading(begin);
-    body.EndReading(end);
-    const nsAutoCString::const_iterator body_end = end;
-    nsAutoCString headerName, headerValue;
-    bool emptyHeader = false;
-    while (FetchUtil::ExtractHeader(begin, end, headerName,
-                                    headerValue, &emptyHeader) &&
-           !emptyHeader) {
-      mHeaderNames.AppendElement(headerName);
-      mHeaderValues.AppendElement(headerValue);
-      headerName.Truncate();
-      headerValue.Truncate();
-    }
-
-    // Replace the upload stream with one only containing the body text.
-    nsCOMPtr<nsIStringInputStream> strStream =
-      do_CreateInstance(NS_STRINGINPUTSTREAM_CONTRACTID, &rv);
-    NS_ENSURE_SUCCESS(rv, rv);
-    // Skip past the "\r\n" that separates the headers and the body.
-    ++begin;
-    ++begin;
-    body.Assign(Substring(begin, body_end));
-    rv = strStream->SetData(body.BeginReading(), body.Length());
-    NS_ENSURE_SUCCESS(rv, rv);
-    mUploadStream = strStream;
-
-    return NS_OK;
   }
 };
 
@@ -1668,7 +1618,7 @@ ServiceWorkerPrivate::SendFetchEvent(nsIInterceptedChannel* aChannel,
   }
 
   RefPtr<ServiceWorkerRegistrationInfo> registration =
-    swm->GetRegistration(mInfo->GetPrincipal(), mInfo->Scope());
+    swm->GetRegistration(mInfo->Principal(), mInfo->Scope());
 
   // Its possible the registration is removed between starting the interception
   // and actually dispatching the fetch event.  In these cases we simply
@@ -1791,32 +1741,49 @@ ServiceWorkerPrivate::SpawnWorkerIfNeeded(WakeUpReason aWhy,
     return rv;
   }
 
-  info.mPrincipal = mInfo->GetPrincipal();
+  nsCOMPtr<nsIURI> uri;
+  rv = mInfo->Principal()->GetURI(getter_AddRefs(uri));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  if (NS_WARN_IF(!uri)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  // Create a pristine codebase principal to avoid any possibility of inheriting
+  // CSP values.  The principal on the registration may be polluted with CSP
+  // from the registering page or other places the principal is passed.  If
+  // bug 965637 is ever fixed this can be removed.
+  info.mPrincipal =
+    BasePrincipal::CreateCodebasePrincipal(uri, mInfo->GetOriginAttributes());
+  if (NS_WARN_IF(!info.mPrincipal)) {
+    return NS_ERROR_FAILURE;
+  }
 
   nsContentUtils::StorageAccess access =
     nsContentUtils::StorageAllowedForPrincipal(info.mPrincipal);
   info.mStorageAllowed = access > nsContentUtils::StorageAccess::ePrivateBrowsing;
   info.mOriginAttributes = mInfo->GetOriginAttributes();
 
+  // Verify that we don't have any CSP on pristine principal.
+#if defined(DEBUG) || !defined(RELEASE_OR_BETA)
   nsCOMPtr<nsIContentSecurityPolicy> csp;
-  rv = info.mPrincipal->GetCsp(getter_AddRefs(csp));
+  Unused << info.mPrincipal->GetCsp(getter_AddRefs(csp));
+  MOZ_DIAGNOSTIC_ASSERT(!csp);
+#endif
+
+  // Default CSP permissions for now.  These will be overrided if necessary
+  // based on the script CSP headers during load in ScriptLoader.
+  info.mEvalAllowed = true;
+  info.mReportCSPViolations = false;
+
+  WorkerPrivate::OverrideLoadInfoLoadGroup(info);
+
+  rv = info.SetPrincipalOnMainThread(info.mPrincipal, info.mLoadGroup);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return rv;
   }
-
-  info.mCSP = csp;
-  if (info.mCSP) {
-    rv = info.mCSP->GetAllowsEval(&info.mReportCSPViolations,
-                                  &info.mEvalAllowed);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-  } else {
-    info.mEvalAllowed = true;
-    info.mReportCSPViolations = false;
-  }
-
-  WorkerPrivate::OverrideLoadInfoLoadGroup(info);
 
   AutoJSAPI jsapi;
   jsapi.Init();
@@ -1981,54 +1948,80 @@ ServiceWorkerPrivate::IsIdle() const
   return mTokenCount == 0 || (mTokenCount == 1 && mIdleKeepAliveToken);
 }
 
-/* static */ void
-ServiceWorkerPrivate::NoteIdleWorkerCallback(nsITimer* aTimer, void* aPrivate)
+namespace {
+
+class ServiceWorkerPrivateTimerCallback final : public nsITimerCallback
+{
+public:
+  typedef void (ServiceWorkerPrivate::*Method)(nsITimer*);
+
+  ServiceWorkerPrivateTimerCallback(ServiceWorkerPrivate* aServiceWorkerPrivate,
+                                    Method aMethod)
+    : mServiceWorkerPrivate(aServiceWorkerPrivate)
+    , mMethod(aMethod)
+  {
+  }
+
+  NS_IMETHOD
+  Notify(nsITimer* aTimer) override
+  {
+    (mServiceWorkerPrivate->*mMethod)(aTimer);
+    mServiceWorkerPrivate = nullptr;
+    return NS_OK;
+  }
+
+private:
+  ~ServiceWorkerPrivateTimerCallback() = default;
+
+  RefPtr<ServiceWorkerPrivate> mServiceWorkerPrivate;
+  Method mMethod;
+
+  NS_DECL_THREADSAFE_ISUPPORTS
+};
+
+NS_IMPL_ISUPPORTS(ServiceWorkerPrivateTimerCallback, nsITimerCallback);
+
+} // anonymous namespace
+
+void
+ServiceWorkerPrivate::NoteIdleWorkerCallback(nsITimer* aTimer)
 {
   AssertIsOnMainThread();
-  MOZ_ASSERT(aPrivate);
 
-  RefPtr<ServiceWorkerPrivate> swp = static_cast<ServiceWorkerPrivate*>(aPrivate);
-
-  MOZ_ASSERT(aTimer == swp->mIdleWorkerTimer, "Invalid timer!");
+  MOZ_ASSERT(aTimer == mIdleWorkerTimer, "Invalid timer!");
 
   // Release ServiceWorkerPrivate's token, since the grace period has ended.
-  swp->mIdleKeepAliveToken = nullptr;
+  mIdleKeepAliveToken = nullptr;
 
-  if (swp->mWorkerPrivate) {
+  if (mWorkerPrivate) {
     // If we still have a workerPrivate at this point it means there are pending
     // waitUntil promises. Wait a bit more until we forcibly terminate the
     // worker.
     uint32_t timeout = Preferences::GetInt("dom.serviceWorkers.idle_extended_timeout");
+    nsCOMPtr<nsITimerCallback> cb = new ServiceWorkerPrivateTimerCallback(
+      this, &ServiceWorkerPrivate::TerminateWorkerCallback);
     DebugOnly<nsresult> rv =
-      swp->mIdleWorkerTimer->InitWithFuncCallback(ServiceWorkerPrivate::TerminateWorkerCallback,
-                                                  aPrivate,
-                                                  timeout,
-                                                  nsITimer::TYPE_ONE_SHOT);
+      mIdleWorkerTimer->InitWithCallback(cb, timeout, nsITimer::TYPE_ONE_SHOT);
     MOZ_ASSERT(NS_SUCCEEDED(rv));
   }
 }
 
-/* static */ void
-ServiceWorkerPrivate::TerminateWorkerCallback(nsITimer* aTimer, void *aPrivate)
+void
+ServiceWorkerPrivate::TerminateWorkerCallback(nsITimer* aTimer)
 {
   AssertIsOnMainThread();
-  MOZ_ASSERT(aPrivate);
 
-  RefPtr<ServiceWorkerPrivate> serviceWorkerPrivate =
-    static_cast<ServiceWorkerPrivate*>(aPrivate);
-
-  MOZ_ASSERT(aTimer == serviceWorkerPrivate->mIdleWorkerTimer,
-      "Invalid timer!");
+  MOZ_ASSERT(aTimer == this->mIdleWorkerTimer, "Invalid timer!");
 
   // mInfo must be non-null at this point because NoteDeadServiceWorkerInfo
   // which zeroes it calls TerminateWorker which cancels our timer which will
   // ensure we don't get invoked even if the nsTimerEvent is in the event queue.
   ServiceWorkerManager::LocalizeAndReportToAllClients(
-    serviceWorkerPrivate->mInfo->Scope(),
+    mInfo->Scope(),
     "ServiceWorkerGraceTimeoutTermination",
-    nsTArray<nsString> { NS_ConvertUTF8toUTF16(serviceWorkerPrivate->mInfo->Scope()) });
+    nsTArray<nsString> { NS_ConvertUTF8toUTF16(mInfo->Scope()) });
 
-  serviceWorkerPrivate->TerminateWorker();
+  TerminateWorker();
 }
 
 void
@@ -2053,10 +2046,10 @@ void
 ServiceWorkerPrivate::ResetIdleTimeout()
 {
   uint32_t timeout = Preferences::GetInt("dom.serviceWorkers.idle_timeout");
+  nsCOMPtr<nsITimerCallback> cb = new ServiceWorkerPrivateTimerCallback(
+    this, &ServiceWorkerPrivate::NoteIdleWorkerCallback);
   DebugOnly<nsresult> rv =
-    mIdleWorkerTimer->InitWithFuncCallback(ServiceWorkerPrivate::NoteIdleWorkerCallback,
-                                           this, timeout,
-                                           nsITimer::TYPE_ONE_SHOT);
+    mIdleWorkerTimer->InitWithCallback(cb, timeout, nsITimer::TYPE_ONE_SHOT);
   MOZ_ASSERT(NS_SUCCEEDED(rv));
 }
 
@@ -2076,7 +2069,11 @@ ServiceWorkerPrivate::ReleaseToken()
   --mTokenCount;
   if (!mTokenCount) {
     TerminateWorker();
-  } else if (IsIdle()) {
+  }
+
+  // mInfo can be nullptr here if NoteDeadServiceWorkerInfo() is called while
+  // the KeepAliveToken is being proxy released as a runnable.
+  else if (mInfo && IsIdle()) {
     RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
     if (swm) {
       swm->WorkerIsIdle(mInfo);

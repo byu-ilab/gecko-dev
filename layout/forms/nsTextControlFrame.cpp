@@ -250,7 +250,7 @@ nsTextControlFrame::EnsureEditorInitialized()
   nsIDocument* doc = mContent->GetComposedDoc();
   NS_ENSURE_TRUE(doc, NS_ERROR_FAILURE);
 
-  nsWeakFrame weakFrame(this);
+  AutoWeakFrame weakFrame(this);
 
   // Flush out content on our document.  Have to do this, because script
   // blockers don't prevent the sink flushing out content and notifying in the
@@ -305,13 +305,18 @@ nsTextControlFrame::EnsureEditorInitialized()
     // editor.
     mEditorHasBeenInitialized = true;
 
-    nsAutoString val;
-    txtCtrl->GetTextEditorValue(val, true);
-    int32_t length = val.Length();
-
-    // Set the selection to the end of the text field. (bug 1287655)
     if (weakFrame.IsAlive()) {
-      SetSelectionEndPoints(length, length);
+      uint32_t position = 0;
+
+      // Set the selection to the end of the text field (bug 1287655),
+      // but only if the contents has changed (bug 1337392).
+      if (txtCtrl->ValueChanged()) {
+        nsAutoString val;
+        txtCtrl->GetTextEditorValue(val, true);
+        position = val.Length();
+      }
+
+      SetSelectionEndPoints(position, position);
     }
   }
   NS_ENSURE_STATE(weakFrame.IsAlive());
@@ -347,32 +352,12 @@ nsTextControlFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
 
   // Create the placeholder anonymous content if needed.
   if (mUsePlaceholder) {
-    nsIContent* placeholderNode = txtCtrl->CreatePlaceholderNode();
+    Element* placeholderNode = txtCtrl->CreatePlaceholderNode();
     NS_ENSURE_TRUE(placeholderNode, NS_ERROR_OUT_OF_MEMORY);
 
     // Associate ::placeholder pseudo-element with the placeholder node.
-    CSSPseudoElementType pseudoType = CSSPseudoElementType::placeholder;
-
-    // If this is a text input inside a number input then we want to use the
-    // main number input as the source of style for the placeholder frame.
-    nsIFrame* mainInputFrame = this;
-    if (StyleContext()->GetPseudoType() == CSSPseudoElementType::mozNumberText) {
-      do {
-        mainInputFrame = mainInputFrame->GetParent();
-      } while (mainInputFrame &&
-               mainInputFrame->GetType() != nsGkAtoms::numberControlFrame);
-      MOZ_ASSERT(mainInputFrame);
-    }
-
-    RefPtr<nsStyleContext> placeholderStyleContext =
-      PresContext()->StyleSet()->ResolvePseudoElementStyle(
-          mainInputFrame->GetContent()->AsElement(), pseudoType, StyleContext(),
-          placeholderNode->AsElement());
-
-    if (!aElements.AppendElement(ContentInfo(placeholderNode,
-                                 placeholderStyleContext))) {
-      return NS_ERROR_OUT_OF_MEMORY;
-    }
+    placeholderNode->SetPseudoElementType(CSSPseudoElementType::placeholder);
+    aElements.AppendElement(placeholderNode);
 
     if (!IsSingleLineTextControl()) {
       // For textareas, UpdateValueDisplay doesn't initialize the visibility
@@ -561,7 +546,7 @@ nsTextControlFrame::Reflow(nsPresContext*   aPresContext,
   // take into account css properties that affect overflow handling
   FinishAndStoreOverflow(&aDesiredSize);
 
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
 }
 
@@ -731,7 +716,7 @@ nsresult nsTextControlFrame::SetFormProperty(nsIAtom* aName, const nsAString& aV
       //      of select all which merely builds a range that selects
       //      all of the content and adds that to the selection.
 
-      nsWeakFrame weakThis = this;
+      AutoWeakFrame weakThis = this;
       SelectAllOrCollapseToEndOfText(true);  // NOTE: can destroy the world
       if (!weakThis.IsAlive()) {
         return NS_OK;
@@ -759,9 +744,9 @@ nsTextControlFrame::GetEditor(nsIEditor **aEditor)
 
 nsresult
 nsTextControlFrame::SetSelectionInternal(nsIDOMNode *aStartNode,
-                                         int32_t aStartOffset,
+                                         uint32_t aStartOffset,
                                          nsIDOMNode *aEndNode,
-                                         int32_t aEndOffset,
+                                         uint32_t aEndOffset,
                                          nsITextControlFrame::SelectionDirection aDirection)
 {
   // Create a new range to represent the new selection.
@@ -773,6 +758,11 @@ nsTextControlFrame::SetSelectionInternal(nsIDOMNode *aStartNode,
   // we have access to the node.
   nsCOMPtr<nsINode> start = do_QueryInterface(aStartNode);
   nsCOMPtr<nsINode> end = do_QueryInterface(aEndNode);
+  // XXXbz nsRange::Set takes int32_t (and ranges generally work on int32_t),
+  // but we're passing uint32_t.  The good news is that at this point our
+  // endpoints should really be within our length, so not really that big.  And
+  // if they _are_ that big, Set() will simply error out, which is not too bad
+  // for a case we don't expect to happen.
   nsresult rv = range->Set(start, aStartOffset, end, aEndOffset);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -821,15 +811,6 @@ nsTextControlFrame::ScrollSelectionIntoView()
   }
 
   return NS_ERROR_FAILURE;
-}
-
-mozilla::dom::Element*
-nsTextControlFrame::GetRootNodeAndInitializeEditor()
-{
-  nsCOMPtr<nsIDOMElement> root;
-  GetRootNodeAndInitializeEditor(getter_AddRefs(root));
-  nsCOMPtr<mozilla::dom::Element> rootElem = do_QueryInterface(root);
-  return rootElem;
 }
 
 nsresult
@@ -885,7 +866,7 @@ nsTextControlFrame::SelectAllOrCollapseToEndOfText(bool aSelect)
 }
 
 nsresult
-nsTextControlFrame::SetSelectionEndPoints(int32_t aSelStart, int32_t aSelEnd,
+nsTextControlFrame::SetSelectionEndPoints(uint32_t aSelStart, uint32_t aSelEnd,
                                           nsITextControlFrame::SelectionDirection aDirection)
 {
   NS_ASSERTION(aSelStart <= aSelEnd, "Invalid selection offsets!");
@@ -894,7 +875,7 @@ nsTextControlFrame::SetSelectionEndPoints(int32_t aSelStart, int32_t aSelEnd,
     return NS_ERROR_FAILURE;
 
   nsCOMPtr<nsIDOMNode> startNode, endNode;
-  int32_t startOffset, endOffset;
+  uint32_t startOffset, endOffset;
 
   // Calculate the selection start point.
 
@@ -920,7 +901,7 @@ nsTextControlFrame::SetSelectionEndPoints(int32_t aSelStart, int32_t aSelEnd,
 }
 
 NS_IMETHODIMP
-nsTextControlFrame::SetSelectionRange(int32_t aSelStart, int32_t aSelEnd,
+nsTextControlFrame::SetSelectionRange(uint32_t aSelStart, uint32_t aSelEnd,
                                       nsITextControlFrame::SelectionDirection aDirection)
 {
   nsresult rv = EnsureEditorInitialized();
@@ -937,52 +918,10 @@ nsTextControlFrame::SetSelectionRange(int32_t aSelStart, int32_t aSelEnd,
 }
 
 
-NS_IMETHODIMP
-nsTextControlFrame::SetSelectionStart(int32_t aSelectionStart)
-{
-  nsresult rv = EnsureEditorInitialized();
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  int32_t selStart = 0, selEnd = 0;
-
-  rv = GetSelectionRange(&selStart, &selEnd);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  if (aSelectionStart > selEnd) {
-    // Collapse to the new start point.
-    selEnd = aSelectionStart;
-  }
-
-  selStart = aSelectionStart;
-
-  return SetSelectionEndPoints(selStart, selEnd);
-}
-
-NS_IMETHODIMP
-nsTextControlFrame::SetSelectionEnd(int32_t aSelectionEnd)
-{
-  nsresult rv = EnsureEditorInitialized();
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  int32_t selStart = 0, selEnd = 0;
-
-  rv = GetSelectionRange(&selStart, &selEnd);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  if (aSelectionEnd < selStart) {
-    // Collapse to the new end point.
-    selStart = aSelectionEnd;
-  }
-
-  selEnd = aSelectionEnd;
-
-  return SetSelectionEndPoints(selStart, selEnd);
-}
-
 nsresult
-nsTextControlFrame::OffsetToDOMPoint(int32_t aOffset,
+nsTextControlFrame::OffsetToDOMPoint(uint32_t aOffset,
                                      nsIDOMNode** aResult,
-                                     int32_t* aPosition)
+                                     uint32_t* aPosition)
 {
   NS_ENSURE_ARG_POINTER(aResult && aPosition);
 
@@ -1014,13 +953,13 @@ nsTextControlFrame::OffsetToDOMPoint(int32_t aOffset,
   NS_ENSURE_SUCCESS(rv, rv);
   nsCOMPtr<nsIDOMText> textNode = do_QueryInterface(firstNode);
 
-  if (length == 0 || aOffset < 0) {
+  if (length == 0) {
     NS_IF_ADDREF(*aResult = rootNode);
     *aPosition = 0;
   } else if (textNode) {
     uint32_t textLength = 0;
     textNode->GetLength(&textLength);
-    if (length == 2 && uint32_t(aOffset) == textLength) {
+    if (length == 2 && aOffset == textLength) {
       // If we're at the end of the text node and we have a trailing BR node,
       // set the selection on the BR node.
       NS_IF_ADDREF(*aResult = rootNode);
@@ -1028,64 +967,12 @@ nsTextControlFrame::OffsetToDOMPoint(int32_t aOffset,
     } else {
       // Otherwise, set the selection on the textnode itself.
       NS_IF_ADDREF(*aResult = firstNode);
-      *aPosition = std::min(aOffset, int32_t(textLength));
+      *aPosition = std::min(aOffset, textLength);
     }
   } else {
     NS_IF_ADDREF(*aResult = rootNode);
     *aPosition = 0;
   }
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-nsTextControlFrame::GetSelectionRange(int32_t* aSelectionStart,
-                                      int32_t* aSelectionEnd,
-                                      SelectionDirection* aDirection)
-{
-  // make sure we have an editor
-  nsresult rv = EnsureEditorInitialized();
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  if (aSelectionStart) {
-    *aSelectionStart = 0;
-  }
-  if (aSelectionEnd) {
-    *aSelectionEnd = 0;
-  }
-  if (aDirection) {
-    *aDirection = eNone;
-  }
-
-  nsCOMPtr<nsITextControlElement> txtCtrl = do_QueryInterface(GetContent());
-  NS_ASSERTION(txtCtrl, "Content not a text control element");
-  nsISelectionController* selCon = txtCtrl->GetSelectionController();
-  NS_ENSURE_TRUE(selCon, NS_ERROR_FAILURE);
-  nsCOMPtr<nsISelection> selection;
-  rv = selCon->GetSelection(nsISelectionController::SELECTION_NORMAL, getter_AddRefs(selection));
-  NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_TRUE(selection, NS_ERROR_FAILURE);
-
-  dom::Selection* sel = selection->AsSelection();
-  if (aDirection) {
-    nsDirection direction = sel->GetSelectionDirection();
-    if (direction == eDirNext) {
-      *aDirection = eForward;
-    } else if (direction == eDirPrevious) {
-      *aDirection = eBackward;
-    } else {
-      NS_NOTREACHED("Invalid nsDirection enum value");
-    }
-  }
-
-  if (!aSelectionStart || !aSelectionEnd) {
-    return NS_OK;
-  }
-
-  mozilla::dom::Element* root = GetRootNodeAndInitializeEditor();
-  NS_ENSURE_STATE(root);
-  nsContentUtils::GetSelectionInTextControl(sel, root,
-                                            *aSelectionStart, *aSelectionEnd);
 
   return NS_OK;
 }
@@ -1277,7 +1164,7 @@ nsTextControlFrame::SetValueChanged(bool aValueChanged)
   NS_ASSERTION(txtCtrl, "Content not a text control element");
 
   if (mUsePlaceholder) {
-    nsWeakFrame weakFrame(this);
+    AutoWeakFrame weakFrame(this);
     txtCtrl->UpdatePlaceholderVisibility(true);
     if (!weakFrame.IsAlive()) {
       return;
@@ -1333,7 +1220,7 @@ nsTextControlFrame::UpdateValueDisplay(bool aNotify,
   // editor, since EnsureEditorInitialized takes care of this.
   if (mUsePlaceholder && !aBeforeEditorInit)
   {
-    nsWeakFrame weakFrame(this);
+    AutoWeakFrame weakFrame(this);
     txtCtrl->UpdatePlaceholderVisibility(aNotify);
     NS_ENSURE_STATE(weakFrame.IsAlive());
   }

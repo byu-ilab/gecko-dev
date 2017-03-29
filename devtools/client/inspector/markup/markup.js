@@ -71,11 +71,8 @@ function MarkupView(inspector, frame, controllerWindow) {
   this.doc = this._frame.contentDocument;
   this._elt = this.doc.querySelector("#root");
 
-  try {
-    this.maxChildren = Services.prefs.getIntPref("devtools.markup.pagesize");
-  } catch (ex) {
-    this.maxChildren = DEFAULT_MAX_CHILDREN;
-  }
+  this.maxChildren = Services.prefs.getIntPref("devtools.markup.pagesize",
+                                               DEFAULT_MAX_CHILDREN);
 
   this.collapseAttributes =
     Services.prefs.getBoolPref(ATTR_COLLAPSE_ENABLED_PREF);
@@ -166,10 +163,14 @@ MarkupView.prototype = {
 
   _initTooltips: function () {
     // The tooltips will be attached to the toolbox document.
-    this.eventDetailsTooltip = new HTMLTooltip(this.toolbox.doc,
-      {type: "arrow"});
-    this.imagePreviewTooltip = new HTMLTooltip(this.toolbox.doc,
-      {type: "arrow", useXulWrapper: "true"});
+    this.eventDetailsTooltip = new HTMLTooltip(this.toolbox.doc, {
+      type: "arrow",
+      consumeOutsideClicks: false,
+    });
+    this.imagePreviewTooltip = new HTMLTooltip(this.toolbox.doc, {
+      type: "arrow",
+      useXulWrapper: true,
+    });
     this._enableImagePreviewTooltip();
   },
 
@@ -421,7 +422,8 @@ MarkupView.prototype = {
    *         requests queued up
    */
   _showBoxModel: function (nodeFront) {
-    return this.toolbox.highlighterUtils.highlightNodeFront(nodeFront);
+    return this.toolbox.highlighterUtils.highlightNodeFront(nodeFront)
+      .catch(this._handleRejectionIfNotDestroyed);
   },
 
   /**
@@ -434,7 +436,8 @@ MarkupView.prototype = {
    *         requests queued up
    */
   _hideBoxModel: function (forceHide) {
-    return this.toolbox.highlighterUtils.unhighlight(forceHide);
+    return this.toolbox.highlighterUtils.unhighlight(forceHide)
+      .catch(this._handleRejectionIfNotDestroyed);
   },
 
   _briefBoxModelTimer: null,
@@ -1607,7 +1610,7 @@ MarkupView.prototype = {
       // this container will do double duty as the container for the single
       // text child.
       while (container.children.firstChild) {
-        container.children.removeChild(container.children.firstChild);
+        container.children.firstChild.remove();
       }
 
       container.setInlineTextChild(container.node.inlineTextChild);
@@ -1619,7 +1622,7 @@ MarkupView.prototype = {
 
     if (!container.hasChildren) {
       while (container.children.firstChild) {
-        container.children.removeChild(container.children.firstChild);
+        container.children.firstChild.remove();
       }
       container.childrenDirty = false;
       container.setExpanded(false);
@@ -1662,7 +1665,7 @@ MarkupView.prototype = {
         }
 
         while (container.children.firstChild) {
-          container.children.removeChild(container.children.firstChild);
+          container.children.firstChild.remove();
         }
 
         if (!(children.hasFirst && children.hasLast)) {

@@ -25,7 +25,7 @@ URLClassifierParent::StartClassify(nsIPrincipal* aPrincipal,
   nsCOMPtr<nsIURIClassifier> uriClassifier =
     do_GetService(NS_URICLASSIFIERSERVICE_CONTRACTID, &rv);
   if (NS_SUCCEEDED(rv)) {
-    rv = uriClassifier->Classify(aPrincipal, aUseTrackingProtection,
+    rv = uriClassifier->Classify(aPrincipal, nullptr, aUseTrackingProtection,
                                  this, aSuccess);
   }
   if (NS_FAILED(rv) || !*aSuccess) {
@@ -42,10 +42,18 @@ URLClassifierParent::StartClassify(nsIPrincipal* aPrincipal,
 }
 
 nsresult
-URLClassifierParent::OnClassifyComplete(nsresult aRv)
+URLClassifierParent::OnClassifyComplete(nsresult aErrorCode,
+                                        const nsACString& aList,
+                                        const nsACString& aProvider,
+                                        const nsACString& aPrefix)
 {
   if (mIPCOpen) {
-    Unused << Send__delete__(this, aRv);
+    ClassifierInfo info;
+    info.list() = aList;
+    info.prefix() = aPrefix;
+    info.provider() = aProvider;
+
+    Unused << Send__delete__(this, info, aErrorCode);
   }
   return NS_OK;
 }
@@ -54,7 +62,7 @@ void
 URLClassifierParent::ClassificationFailed()
 {
   if (mIPCOpen) {
-    Unused << Send__delete__(this, void_t());
+    Unused << Send__delete__(this, void_t(), NS_ERROR_FAILURE);
   }
 }
 

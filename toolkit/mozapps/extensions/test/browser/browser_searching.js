@@ -262,10 +262,7 @@ function get_expected_results(aSortBy, aLocalExpected) {
  */
 function check_results(aQuery, aSortBy, aReverseOrder, aShowLocal) {
 
-  var xpinstall_enabled = true;
-  try {
-    xpinstall_enabled = Services.prefs.getBoolPref(PREF_XPI_ENABLED);
-  } catch (e) {}
+  var xpinstall_enabled = Services.prefs.getBoolPref(PREF_XPI_ENABLED, true);
 
   // When XPI Instalation is disabled, those buttons are hidden and unused
   if (xpinstall_enabled) {
@@ -555,6 +552,8 @@ add_test(function() {
     installBtn = get_install_button(remoteItem);
     is(installBtn.hidden, false, "Install button should be showing before install");
     remoteItem.mAddon.install.addListener(listener);
+    // If prompts are enabled, accept the install prompt.
+    promiseNotification();
     EventUtils.synthesizeMouseAtCenter(installBtn, { }, gManagerWindow);
   });
 });

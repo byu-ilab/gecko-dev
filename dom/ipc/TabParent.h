@@ -346,10 +346,6 @@ public:
   virtual bool
   DeallocPColorPickerParent(PColorPickerParent* aColorPicker) override;
 
-  virtual PDatePickerParent*
-  AllocPDatePickerParent(const nsString& aTitle, const nsString& aInitialDate) override;
-  virtual bool DeallocPDatePickerParent(PDatePickerParent* aDatePicker) override;
-
   virtual PDocAccessibleParent*
   AllocPDocAccessibleParent(PDocAccessibleParent*, const uint64_t&,
                             const uint32_t&, const IAccessibleHolder&) override;
@@ -599,6 +595,8 @@ public:
   void LiveResizeStarted() override;
   void LiveResizeStopped() override;
 
+  void DispatchTabChildNotReadyEvent();
+
 protected:
   bool ReceiveMessage(const nsString& aMessage,
                       bool aSync,
@@ -777,6 +775,10 @@ private:
   // If this flag is set, then the tab's layers will be preserved even when
   // the tab's docshell is inactive.
   bool mPreserveLayers;
+
+  // True if this TabParent has had its layer tree sent to the compositor
+  // at least once.
+  bool mHasPresented;
 
 public:
   static TabParent* GetTabParentFromLayersId(uint64_t aLayersId);

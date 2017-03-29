@@ -588,6 +588,7 @@ class Debugger : private mozilla::LinkedListElement<Debugger>
 
     static void traceObject(JSTracer* trc, JSObject* obj);
     void trace(JSTracer* trc);
+    void traceForMovingGC(JSTracer* trc);
     static void finalize(FreeOp* fop, JSObject* obj);
     void traceCrossCompartmentEdges(JSTracer* tracer);
 
@@ -805,6 +806,8 @@ class Debugger : private mozilla::LinkedListElement<Debugger>
     static inline Debugger* fromJSObject(const JSObject* obj);
     static Debugger* fromChildJSObject(JSObject* obj);
 
+    Zone* zone() const { return toJSObject()->zone(); }
+
     bool hasMemory() const;
     DebuggerMemory& memory() const;
 
@@ -829,10 +832,13 @@ class Debugger : private mozilla::LinkedListElement<Debugger>
      */
     static void traceIncomingCrossCompartmentEdges(JSTracer* tracer);
     static MOZ_MUST_USE bool markIteratively(GCMarker* marker);
-    static void traceAll(JSTracer* trc);
+    static void traceAllForMovingGC(JSTracer* trc);
     static void sweepAll(FreeOp* fop);
     static void detachAllDebuggersFromGlobal(FreeOp* fop, GlobalObject* global);
     static void findZoneEdges(JS::Zone* v, gc::ZoneComponentFinder& finder);
+#ifdef DEBUG
+    static bool isDebuggerCrossCompartmentEdge(JSObject* obj, const js::gc::Cell* cell);
+#endif
 
     // Checks it the current compartment is allowed to execute code.
     static inline MOZ_MUST_USE bool checkNoExecute(JSContext* cx, HandleScript script);
@@ -1385,6 +1391,8 @@ class DebuggerObject : public NativeObject
                                             MutableHandleObject result);
     static MOZ_MUST_USE bool getErrorMessageName(JSContext* cx, HandleDebuggerObject object,
                                                  MutableHandleString result);
+    static MOZ_MUST_USE bool getErrorNotes(JSContext* cx, HandleDebuggerObject object,
+                                           MutableHandleValue result);
     static MOZ_MUST_USE bool getErrorLineNumber(JSContext* cx, HandleDebuggerObject object,
                                                 MutableHandleValue result);
     static MOZ_MUST_USE bool getErrorColumnNumber(JSContext* cx, HandleDebuggerObject object,
@@ -1496,6 +1504,7 @@ class DebuggerObject : public NativeObject
     static MOZ_MUST_USE bool globalGetter(JSContext* cx, unsigned argc, Value* vp);
     static MOZ_MUST_USE bool allocationSiteGetter(JSContext* cx, unsigned argc, Value* vp);
     static MOZ_MUST_USE bool errorMessageNameGetter(JSContext* cx, unsigned argc, Value* vp);
+    static MOZ_MUST_USE bool errorNotesGetter(JSContext* cx, unsigned argc, Value* vp);
     static MOZ_MUST_USE bool errorLineNumberGetter(JSContext* cx, unsigned argc, Value* vp);
     static MOZ_MUST_USE bool errorColumnNumberGetter(JSContext* cx, unsigned argc, Value* vp);
     static MOZ_MUST_USE bool isProxyGetter(JSContext* cx, unsigned argc, Value* vp);

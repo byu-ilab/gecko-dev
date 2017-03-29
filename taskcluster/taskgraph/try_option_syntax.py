@@ -27,17 +27,14 @@ BUILD_KINDS = set([
     'artifact-build',
     'hazard',
     'l10n',
-    'upload-symbols',
     'valgrind',
     'static-analysis',
     'spidermonkey',
 ])
 
-# anything in this list is governed by -j
-JOB_KINDS = set([
-    'source-check',
+# anything in this list is governed by -j, matching against the `build_platform` attribute
+JOB_KINDS_MATCHING_BUILD_PLATFORM = set([
     'toolchain',
-    'marionette-harness',
     'android-stuff',
 ])
 
@@ -55,6 +52,7 @@ def alias_contains(infix):
 def alias_matches(pattern):
     pattern = re.compile(pattern)
     return lambda name: pattern.match(name)
+
 
 UNITTEST_ALIASES = {
     # Aliases specify shorthands that can be used in try syntax.  The shorthand
@@ -88,12 +86,12 @@ UNITTEST_ALIASES = {
     'mochitest-debug': alias_prefix('mochitest-debug-'),
     'mochitest-a11y': alias_contains('mochitest-a11y'),
     'mochitest-bc': alias_prefix('mochitest-browser-chrome'),
-    'mochitest-e10s-bc': alias_prefix('mochitest-e10s-browser-chrome'),
+    'mochitest-e10s-bc': alias_prefix('mochitest-browser-chrome-e10s'),
     'mochitest-browser-chrome': alias_prefix('mochitest-browser-chrome'),
-    'mochitest-e10s-browser-chrome': alias_prefix('mochitest-e10s-browser-chrome'),
+    'mochitest-e10s-browser-chrome': alias_prefix('mochitest-browser-chrome-e10s'),
     'mochitest-chrome': alias_contains('mochitest-chrome'),
     'mochitest-dt': alias_prefix('mochitest-devtools-chrome'),
-    'mochitest-e10s-dt': alias_prefix('mochitest-e10s-devtools-chrome'),
+    'mochitest-e10s-dt': alias_prefix('mochitest-devtools-chrome-e10s'),
     'mochitest-gl': alias_prefix('mochitest-webgl'),
     'mochitest-gl-e10s': alias_prefix('mochitest-webgl-e10s'),
     'mochitest-gpu': alias_prefix('mochitest-gpu'),
@@ -166,6 +164,7 @@ RIDEALONG_BUILDS = {
         'sm-asan',
         'sm-mozjs-sys',
         'sm-msan',
+        'sm-fuzzing',
     ],
 }
 
@@ -236,6 +235,14 @@ def parse_message(message):
     parser.add_argument('--spsProfile', dest='profile', action='store_true')
     parser.add_argument('--tag', dest='tag', action='store', default=None)
     parser.add_argument('--no-retry', dest='no_retry', action='store_true')
+    parser.add_argument('--include-nightly', dest='include_nightly', action='store_true')
+
+    # While we are transitioning from BB to TC, we want to push jobs to tc-worker
+    # machines but not overload machines with every try push. Therefore, we add
+    # this temporary option to be able to push jobs to tc-worker.
+    parser.add_argument('-w', '--taskcluster-worker',
+                        dest='taskcluster_worker', action='store_true', default=False)
+
     # In order to run test jobs multiple times
     parser.add_argument('--rebuild', dest='trigger_tests', type=int, default=1)
     parts = parts[try_idx:] if try_idx is not None else []
@@ -309,6 +316,7 @@ class TryOptionSyntax(object):
         self.profile = args.profile
         self.tag = args.tag
         self.no_retry = args.no_retry
+        self.include_nightly = args.include_nightly
 
     def parse_jobs(self, jobs_arg):
         if not jobs_arg or jobs_arg == ['all']:
@@ -532,6 +540,8 @@ class TryOptionSyntax(object):
         attr = attributes.get
 
         def check_run_on_projects():
+            if attr('nightly') and not self.include_nightly:
+                return False
             return set(['try', 'all']) & set(attr('run_on_projects', []))
 
         def match_test(try_spec, attr_name):
@@ -557,10 +567,16 @@ class TryOptionSyntax(object):
                 return False
             return True
 
+        job_try_name = attr('job_try_name')
+        if job_try_name:
+            if self.jobs is None or job_try_name in self.jobs:
+                if self.platforms is None or attr('build_platform') not in self.platforms:
+                    return True
+
         if attr('kind') == 'test':
             return match_test(self.unittests, 'unittest_try_name') \
                  or match_test(self.talos, 'talos_try_name')
-        elif attr('kind') in JOB_KINDS:
+        elif attr('kind') in JOB_KINDS_MATCHING_BUILD_PLATFORM:
             # This will add 'job' tasks to the target set even if no try syntax was specified.
             if not self.jobs:
                 return True

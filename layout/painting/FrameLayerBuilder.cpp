@@ -1063,7 +1063,8 @@ public:
     mContainerCompositorASR(aContainerCompositorASR),
     mParameters(aParameters),
     mPaintedLayerDataTree(*this, aBackgroundColor),
-    mFlattenToSingleLayer(aFlattenToSingleLayer)
+    mFlattenToSingleLayer(aFlattenToSingleLayer),
+    mLastDisplayPortAGR(nullptr)
   {
     nsPresContext* presContext = aContainerFrame->PresContext();
     mAppUnitsPerDevPixel = presContext->AppUnitsPerDevPixel();
@@ -1384,6 +1385,12 @@ protected:
                                   AnimatedGeometryRoot** aAnimatedGeometryRoot,
                                   const ActiveScrolledRoot** aASR);
 
+  /**
+   * Get the display port for an AGR.
+   * The result would be cached for later reusing.
+   */
+  nsRect GetDisplayPortForAnimatedGeometryRoot(AnimatedGeometryRoot* aAnimatedGeometryRoot);
+
   nsDisplayListBuilder*            mBuilder;
   LayerManager*                    mManager;
   FrameLayerBuilder*               mLayerBuilder;
@@ -1454,6 +1461,10 @@ protected:
 
   nsDataHashtable<nsGenericHashKey<MaskLayerKey>, RefPtr<ImageLayer>>
     mRecycledMaskImageLayers;
+  // Keep display port of AGR to avoid wasting time on doing the same
+  // thing repeatly.
+  AnimatedGeometryRoot* mLastDisplayPortAGR;
+  nsRect mLastDisplayPortRect;
 };
 
 class PaintedDisplayItemLayerUserData : public LayerUserData
@@ -1663,7 +1674,8 @@ public:
       return mDrawTarget;
     }
 
-    if (mLayerManager->GetBackendType() == LayersBackend::LAYERS_BASIC) {
+    if (mLayerManager->GetBackendType() == LayersBackend::LAYERS_BASIC ||
+        mLayerManager->GetBackendType() == LayersBackend::LAYERS_WR) {
       mDrawTarget = mLayerManager->CreateOptimalMaskDrawTarget(mSize);
       return mDrawTarget;
     }
@@ -1710,7 +1722,8 @@ public:
 private:
   already_AddRefed<Image> CreateImage()
   {
-    if (mLayerManager->GetBackendType() == LayersBackend::LAYERS_BASIC &&
+    if ((mLayerManager->GetBackendType() == LayersBackend::LAYERS_BASIC ||
+         mLayerManager->GetBackendType() == LayersBackend::LAYERS_WR) &&
         mDrawTarget) {
       RefPtr<SourceSurface> surface = mDrawTarget->Snapshot();
       RefPtr<SourceSurfaceImage> image = new SourceSurfaceImage(mSize, surface);
@@ -3761,6 +3774,33 @@ ContainerState::ChooseAnimatedGeometryRoot(const nsDisplayList& aList,
   return false;
 }
 
+nsRect
+ContainerState::GetDisplayPortForAnimatedGeometryRoot(AnimatedGeometryRoot* aAnimatedGeometryRoot)
+{
+  if (mLastDisplayPortAGR == aAnimatedGeometryRoot) {
+    return mLastDisplayPortRect;
+  }
+
+  nsIScrollableFrame* sf = nsLayoutUtils::GetScrollableFrameFor(*aAnimatedGeometryRoot);
+  if (sf == nullptr) {
+    return nsRect();
+  }
+
+  mLastDisplayPortAGR = aAnimatedGeometryRoot;
+  nsRect& displayport = mLastDisplayPortRect;;
+  bool usingDisplayport =
+    nsLayoutUtils::GetDisplayPort((*aAnimatedGeometryRoot)->GetContent(), &displayport,
+                                  RelativeTo::ScrollFrame);
+  if (!usingDisplayport) {
+    // No async scrolling, so all that matters is that the layer contents
+    // cover the scrollport.
+    displayport = sf->GetScrollPortRect();
+  }
+  nsIFrame* scrollFrame = do_QueryFrame(sf);
+  displayport += scrollFrame->GetOffsetToCrossDoc(mContainerReferenceFrame);
+  return displayport;
+}
+
 nsIntRegion
 ContainerState::ComputeOpaqueRect(nsDisplayItem* aItem,
                                   AnimatedGeometryRoot* aAnimatedGeometryRoot,
@@ -3799,22 +3839,11 @@ ContainerState::ComputeOpaqueRect(nsDisplayItem* aItem,
     return opaquePixels;
   }
 
-  nsIScrollableFrame* sf = nsLayoutUtils::GetScrollableFrameFor(*aAnimatedGeometryRoot);
-  if (sf) {
-    nsRect displayport;
-    bool usingDisplayport =
-      nsLayoutUtils::GetDisplayPort((*aAnimatedGeometryRoot)->GetContent(), &displayport,
-        RelativeTo::ScrollFrame);
-    if (!usingDisplayport) {
-      // No async scrolling, so all that matters is that the layer contents
-      // cover the scrollport.
-      displayport = sf->GetScrollPortRect();
-    }
-    nsIFrame* scrollFrame = do_QueryFrame(sf);
-    displayport += scrollFrame->GetOffsetToCrossDoc(mContainerReferenceFrame);
-    if (opaquePixels.Contains(ScaleRegionToNearestPixels(displayport))) {
-      *aOpaqueForAnimatedGeometryRootParent = true;
-    }
+  const nsRect& displayport =
+    GetDisplayPortForAnimatedGeometryRoot(aAnimatedGeometryRoot);
+  if (!displayport.IsEmpty() &&
+      opaquePixels.Contains(ScaleRegionToNearestPixels(displayport))) {
+    *aOpaqueForAnimatedGeometryRootParent = true;
   }
   return opaquePixels;
 }
@@ -4176,11 +4205,13 @@ ContainerState::ProcessDisplayItems(nsDisplayList* aList)
                                              &scrolledClipRect,
                                              uniformColorPtr);
       } else if (item->ShouldFixToViewport(mBuilder) && itemClip.HasClip() &&
-                 item->AnimatedGeometryRootForScrollMetadata() != animatedGeometryRoot) {
+                 item->AnimatedGeometryRootForScrollMetadata() != animatedGeometryRoot &&
+                 !nsLayoutUtils::UsesAsyncScrolling(item->Frame())) {
         // This is basically the same as the case above, but for the non-APZ
         // case. At the moment, when APZ is off, there is only the root ASR
         // (because scroll frames without display ports don't create ASRs) and
         // the whole clip chain is always just one fused clip.
+        // Bug 1336516 aims to change that and to remove this workaround.
         AnimatedGeometryRoot* clipAGR = item->AnimatedGeometryRootForScrollMetadata();
         nsIntRect scrolledClipRect =
           ScaleToNearestPixels(itemClip.GetClipRect()) + mParameters.mOffset;
@@ -5227,7 +5258,9 @@ ContainerState::Finish(uint32_t* aTextContentFlags,
 {
   mPaintedLayerDataTree.Finish();
 
-  if (!mParameters.mForEventsAndPluginsOnly) {
+  if (!mParameters.mForEventsAndPluginsOnly && !gfxPrefs::LayoutUseContainersForRootFrames()) {
+    // Bug 1336544 tracks re-enabling this assertion in the
+    // gfxPrefs::LayoutUseContainersForRootFrames() case.
     NS_ASSERTION(mContainerBounds.IsEqualInterior(mAccumulatedChildBounds),
                  "Bounds computation mismatch");
   }
@@ -5974,8 +6007,8 @@ FrameLayerBuilder::PaintItems(nsTArray<ClippedDisplayItem>& aItems,
       continue;
 
 #ifdef MOZ_DUMP_PAINTING
-    PROFILER_LABEL_PRINTF("DisplayList", "Draw",
-      js::ProfileEntry::Category::GRAPHICS, "%s", cdi->mItem->Name());
+    PROFILER_LABEL_DYNAMIC("DisplayList", "Draw",
+      js::ProfileEntry::Category::GRAPHICS, cdi->mItem->Name());
 #else
     PROFILER_LABEL("DisplayList", "Draw",
       js::ProfileEntry::Category::GRAPHICS);

@@ -62,7 +62,7 @@ var RequestId = {
   },
 
   get(channel) {
-    return channel && getData(channel).requestId || this.create(channel);
+    return (channel && getData(channel).requestId) || this.create(channel);
   },
 };
 
@@ -754,6 +754,10 @@ HttpObserverManager = {
       let originPrincipal = loadInfo.triggeringPrincipal;
       if (originPrincipal.URI) {
         data.originUrl = originPrincipal.URI.spec;
+      }
+      let docPrincipal = loadInfo.loadingPrincipal;
+      if (docPrincipal && docPrincipal.URI) {
+        data.documentUrl = docPrincipal.URI.spec;
       }
 
       // If there is no loadingPrincipal, check that the request is not going to

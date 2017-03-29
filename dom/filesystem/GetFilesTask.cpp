@@ -149,12 +149,6 @@ GetFilesTaskChild::HandlerCallback()
   mPromise = nullptr;
 }
 
-void
-GetFilesTaskChild::GetPermissionAccessType(nsCString& aAccess) const
-{
-  aAccess.AssignLiteral("read");
-}
-
 /**
  * GetFilesTaskParent
  */
@@ -202,8 +196,8 @@ GetFilesTaskParent::GetSuccessRequestResult(ErrorResult& aRv) const
 
   FallibleTArray<FileSystemFileResponse> inputs;
   if (!inputs.SetLength(mTargetBlobImplArray.Length(), mozilla::fallible_t())) {
-    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
     FileSystemFilesResponse response;
+    aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
     return response;
   }
 
@@ -259,10 +253,10 @@ GetFilesTaskParent::IOWork()
   return NS_OK;
 }
 
-void
-GetFilesTaskParent::GetPermissionAccessType(nsCString& aAccess) const
+nsresult
+GetFilesTaskParent::GetTargetPath(nsAString& aPath) const
 {
-  aAccess.AssignLiteral(DIRECTORY_READ_PERMISSION);
+  return mTargetPath->GetPath(aPath);
 }
 
 } // namespace dom

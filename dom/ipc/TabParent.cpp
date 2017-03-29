@@ -20,7 +20,6 @@
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/indexedDB/ActorsParent.h"
 #include "mozilla/dom/ipc/BlobParent.h"
-#include "mozilla/plugins/PluginWidgetParent.h"
 #include "mozilla/EventStateManager.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
@@ -32,6 +31,7 @@
 #include "mozilla/layers/AsyncDragMetrics.h"
 #include "mozilla/layers/InputAPZContext.h"
 #include "mozilla/layout/RenderFrameParent.h"
+#include "mozilla/plugins/PPluginWidgetParent.h"
 #include "mozilla/LookAndFeel.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/net/NeckoChild.h"
@@ -58,7 +58,6 @@
 #include "nsIDOMWindowUtils.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsILoadInfo.h"
-#include "nsPrincipal.h"
 #include "nsIPromptFactory.h"
 #include "nsIURI.h"
 #include "nsIWindowWatcher.h"
@@ -69,6 +68,7 @@
 #include "nsViewManager.h"
 #include "nsVariant.h"
 #include "nsIWidget.h"
+#include "nsNetUtil.h"
 #ifndef XP_WIN
 #include "nsJARProtocolHandler.h"
 #endif
@@ -79,7 +79,6 @@
 #include "PermissionMessageUtils.h"
 #include "StructuredCloneData.h"
 #include "ColorPickerParent.h"
-#include "DatePickerParent.h"
 #include "FilePickerParent.h"
 #include "TabChild.h"
 #include "LoadContext.h"
@@ -99,6 +98,10 @@
 #include "mozilla/WebBrowserPersistDocumentParent.h"
 #include "nsIGroupedSHistory.h"
 #include "PartialSHistory.h"
+
+#ifdef XP_WIN
+#include "mozilla/plugins/PluginWidgetParent.h"
+#endif
 
 #if defined(XP_WIN) && defined(ACCESSIBILITY)
 #include "mozilla/a11y/AccessibleWrap.h"
@@ -163,6 +166,7 @@ TabParent::TabParent(nsIContentParent* aManager,
 #endif
   , mLayerTreeEpoch(0)
   , mPreserveLayers(false)
+  , mHasPresented(false)
 {
   MOZ_ASSERT(aManager);
 }
@@ -386,6 +390,7 @@ TabParent::DestroyInternal()
     frame->Destroy();
   }
 
+#ifdef XP_WIN
   // Let all PluginWidgets know we are tearing down. Prevents
   // these objects from sending async events after the child side
   // is shut down.
@@ -395,6 +400,7 @@ TabParent::DestroyInternal()
     static_cast<mozilla::plugins::PluginWidgetParent*>(
        iter.Get()->GetKey())->ParentDestroy();
   }
+#endif
 }
 
 void
@@ -646,7 +652,9 @@ TabParent::InitRenderFrame()
       RenderFrameParent* renderFrame = new RenderFrameParent(frameLoader, &success);
       uint64_t layersId = renderFrame->GetLayersId();
       AddTabParentToTable(layersId, this);
-      Unused << SendPRenderFrameConstructor(renderFrame);
+      if (!SendPRenderFrameConstructor(renderFrame)) {
+        return;
+      }
 
       TextureFactoryIdentifier textureFactoryIdentifier;
       renderFrame->GetTextureFactoryIdentifier(&textureFactoryIdentifier);
@@ -852,7 +860,7 @@ void
 TabParent::Activate()
 {
   if (!mIsDestroyed) {
-    Unused << SendActivate();
+    Unused << Manager()->SendActivate(this);
   }
 }
 
@@ -860,7 +868,7 @@ void
 TabParent::Deactivate()
 {
   if (!mIsDestroyed) {
-    Unused << SendDeactivate();
+    Unused << Manager()->SendDeactivate(this);
   }
 }
 
@@ -936,18 +944,22 @@ TabParent::RecvPDocAccessibleConstructor(PDocAccessibleParent* aDoc,
 
     auto parentDoc = static_cast<a11y::DocAccessibleParent*>(aParentDoc);
     mozilla::ipc::IPCResult added = parentDoc->AddChildDoc(doc, aParentID);
+    if (!added) {
+#ifdef DEBUG
+      return added;
+#else
+      return IPC_OK();
+#endif
+    }
+
 #ifdef XP_WIN
     MOZ_ASSERT(aDocCOMProxy.IsNull());
-    if (added) {
-      a11y::WrapperFor(doc)->SetID(aMsaaID);
-      if (a11y::nsWinUtils::IsWindowEmulationStarted()) {
-        doc->SetEmulatedWindowHandle(parentDoc->GetEmulatedWindowHandle());
-      }
+    a11y::WrapperFor(doc)->SetID(aMsaaID);
+    if (a11y::nsWinUtils::IsWindowEmulationStarted()) {
+      doc->SetEmulatedWindowHandle(parentDoc->GetEmulatedWindowHandle());
     }
 #endif
-    if (!added) {
-      return added;
-    }
+
     return IPC_OK();
   } else {
     // null aParentDoc means this document is at the top level in the child
@@ -964,7 +976,9 @@ TabParent::RecvPDocAccessibleConstructor(PDocAccessibleParent* aDoc,
     a11y::WrapperFor(doc)->SetID(aMsaaID);
     MOZ_ASSERT(!aDocCOMProxy.IsNull());
     RefPtr<IAccessible> proxy(aDocCOMProxy.Get());
-    doc->SetCOMProxy(proxy);
+    doc->SetCOMInterface(proxy);
+    doc->MaybeInitWindowEmulation();
+    doc->SendParentCOMProxy();
 #endif
   }
 #endif
@@ -2455,20 +2469,6 @@ TabParent::DeallocPColorPickerParent(PColorPickerParent* actor)
   return true;
 }
 
-PDatePickerParent*
-TabParent::AllocPDatePickerParent(const nsString& aTitle,
-                                  const nsString& aInitialDate)
-{
-  return new DatePickerParent(aTitle, aInitialDate);
-}
-
-bool
-TabParent::DeallocPDatePickerParent(PDatePickerParent* actor)
-{
-  delete actor;
-  return true;
-}
-
 PRenderFrameParent*
 TabParent::AllocPRenderFrameParent()
 {
@@ -2678,10 +2678,16 @@ TabParent::GetLoadContext()
   } else {
     bool isPrivate = mChromeFlags & nsIWebBrowserChrome::CHROME_PRIVATE_WINDOW;
     SetPrivateBrowsingAttributes(isPrivate);
+    bool useTrackingProtection = false;
+    nsCOMPtr<nsIDocShell> docShell = mFrameElement->OwnerDoc()->GetDocShell();
+    if (docShell) {
+      docShell->GetUseTrackingProtection(&useTrackingProtection);
+    }
     loadContext = new LoadContext(GetOwnerElement(),
                                   true /* aIsContent */,
                                   isPrivate,
                                   mChromeFlags & nsIWebBrowserChrome::CHROME_REMOTE_WINDOW,
+                                  useTrackingProtection,
                                   OriginAttributesRef());
     mLoadContext = loadContext;
   }
@@ -2787,10 +2793,29 @@ TabParent::SetHasContentOpener(bool aHasContentOpener)
 }
 
 NS_IMETHODIMP
+TabParent::GetHasPresented(bool* aResult)
+{
+  *aResult = mHasPresented;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 TabParent::NavigateByKey(bool aForward, bool aForDocumentNavigation)
 {
   Unused << SendNavigateByKey(aForward, aForDocumentNavigation);
   return NS_OK;
+}
+
+NS_IMETHODIMP
+TabParent::TransmitPermissionsForPrincipal(nsIPrincipal* aPrincipal)
+{
+  nsCOMPtr<nsIContentParent> manager = Manager();
+  if (!manager->IsContentParent()) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  return manager->AsContentParent()
+    ->TransmitPermissionsForPrincipal(aPrincipal);
 }
 
 class LayerTreeUpdateRunnable final
@@ -2835,6 +2860,7 @@ TabParent::LayerTreeUpdate(uint64_t aEpoch, bool aActive)
 
   RefPtr<Event> event = NS_NewDOMEvent(mFrameElement, nullptr, nullptr);
   if (aActive) {
+    mHasPresented = true;
     event->InitEvent(NS_LITERAL_STRING("MozLayerTreeReady"), true, false);
   } else {
     event->InitEvent(NS_LITERAL_STRING("MozLayerTreeCleared"), true, false);
@@ -2876,7 +2902,12 @@ TabParent::RecvRemotePaintIsReady()
 mozilla::plugins::PPluginWidgetParent*
 TabParent::AllocPPluginWidgetParent()
 {
+#ifdef XP_WIN
   return new mozilla::plugins::PluginWidgetParent();
+#else
+  MOZ_ASSERT_UNREACHABLE();
+  return nullptr;
+#endif
 }
 
 bool
@@ -2991,7 +3022,8 @@ public:
   NS_IMETHOD GetOriginAttributes(JS::MutableHandleValue) NO_IMPL
   NS_IMETHOD GetUseRemoteTabs(bool*) NO_IMPL
   NS_IMETHOD SetRemoteTabs(bool) NO_IMPL
-  NS_IMETHOD IsTrackingProtectionOn(bool*) NO_IMPL
+  NS_IMETHOD GetUseTrackingProtection(bool*) NO_IMPL
+  NS_IMETHOD SetUseTrackingProtection(bool) NO_IMPL
 #undef NO_IMPL
 
 protected:
@@ -3046,7 +3078,8 @@ TabParent::RecvInvokeDragSession(nsTArray<IPCDataTransfer>&& aTransfers,
   if (!shell) {
     if (Manager()->IsContentParent()) {
       Unused << Manager()->AsContentParent()->SendEndDragSession(true, true,
-                                                                 LayoutDeviceIntPoint());
+                                                                 LayoutDeviceIntPoint(),
+                                                                 0);
     }
     return IPC_OK();
   }
@@ -3306,6 +3339,52 @@ void
 TabParent::LiveResizeStopped()
 {
   SuppressDisplayport(false);
+}
+
+void
+TabParent::DispatchTabChildNotReadyEvent()
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  nsCOMPtr<mozilla::dom::EventTarget> target = do_QueryInterface(mFrameElement);
+  if (!target) {
+    NS_WARNING("Could not locate target for tab child not ready event.");
+    return;
+  }
+
+  if (mHasPresented) {
+    // We shouldn't dispatch this event because clearly the
+    // TabChild _became_ ready by the time we were told to
+    // dispatch.
+    return;
+  }
+
+  if (!mDocShellIsActive) {
+    return;
+  }
+
+  RefPtr<nsFrameLoader> frameLoader = GetFrameLoader(true);
+  if (!frameLoader) {
+    return;
+  }
+
+  nsCOMPtr<Element> frameElement(mFrameElement);
+  nsCOMPtr<nsIFrameLoaderOwner> owner = do_QueryInterface(frameElement);
+  if (!owner) {
+    return;
+  }
+
+  RefPtr<nsFrameLoader> currentFrameLoader = owner->GetFrameLoader();
+  if (currentFrameLoader != frameLoader) {
+    return;
+  }
+
+  RefPtr<Event> event = NS_NewDOMEvent(mFrameElement, nullptr, nullptr);
+  event->InitEvent(NS_LITERAL_STRING("MozTabChildNotReady"), true, false);
+  event->SetTrusted(true);
+  event->WidgetEventPtr()->mFlags.mOnlyChromeDispatch = true;
+  bool dummy;
+  mFrameElement->DispatchEvent(event, &dummy);
 }
 
 NS_IMETHODIMP

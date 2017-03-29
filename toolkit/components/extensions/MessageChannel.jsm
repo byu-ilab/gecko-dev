@@ -159,7 +159,7 @@ class FilteringMessageManager {
    * passes the result to our message callback.
    */
   receiveMessage({data, target}) {
-    let handlers = Array.from(this.getHandlers(data.messageName, data.sender, data.recipient));
+    let handlers = Array.from(this.getHandlers(data.messageName, data.sender || null, data.recipient));
 
     data.target = target;
     this.callback(handlers, data);
@@ -379,7 +379,7 @@ this.MessageChannel = {
    *    The filter object to match against.
    * @param {object} data
    *    The data object being matched.
-   * @param {boolean} [strict=false]
+   * @param {boolean} [strict=true]
    *    If true, all properties in the `filter` object have a
    *    corresponding property in `data` with the same value. If
    *    false, properties present in both objects must have the same

@@ -145,9 +145,9 @@ add_task(function* testCaptureVisibleTabPermissions() {
       "permissions": ["tabs"],
     },
 
-    background() {
-      browser.test.assertFalse("captureVisibleTab" in browser.tabs,
-                               'Extension without "<all_tabs>" permission should not have access to captureVisibleTab');
+    background: function() {
+      browser.test.assertEq(undefined, browser.tabs.captureVisibleTab,
+                            'Extension without "<all_urls>" permission should not have access to captureVisibleTab');
       browser.test.notifyPass("captureVisibleTabPermissions");
     },
   });

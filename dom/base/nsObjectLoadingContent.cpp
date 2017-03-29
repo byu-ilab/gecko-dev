@@ -85,9 +85,11 @@
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventStates.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/dom/HTMLObjectElementBinding.h"
 #include "mozilla/dom/HTMLSharedObjectElement.h"
+#include "mozilla/dom/HTMLObjectElement.h"
 #include "nsChannelClassifier.h"
 
 #ifdef XP_WIN
@@ -96,13 +98,6 @@
 #undef CreateEvent
 #endif
 #endif // XP_WIN
-
-#ifdef XP_MACOSX
-// HandlePluginCrashed() and HandlePluginInstantiated() needed from here to
-// fix bug 1147521.  Should later be replaced by proper interface methods,
-// maybe on nsIObjectLoadingContext.
-#include "mozilla/dom/HTMLObjectElement.h"
-#endif
 
 static NS_DEFINE_CID(kAppShellCID, NS_APPSHELL_CID);
 
@@ -190,7 +185,7 @@ nsAsyncInstantiateEvent::Run()
 class CheckPluginStopEvent : public Runnable {
 public:
   explicit CheckPluginStopEvent(nsObjectLoadingContent* aContent)
-  : mContent(aContent) {}
+  : Runnable("CheckPluginStopEvent"), mContent(aContent) {}
 
   ~CheckPluginStopEvent() override = default;
 
@@ -243,7 +238,8 @@ CheckPluginStopEvent::Run()
       LOG(("OBJLC [%p]: CheckPluginStopEvent - superseded in layout flush",
            this));
       return NS_OK;
-    } else if (content->GetPrimaryFrame()) {
+    }
+    if (content->GetPrimaryFrame()) {
       LOG(("OBJLC [%p]: CheckPluginStopEvent - frame gained in layout flush",
            this));
       objLC->mPendingCheckPluginStopEvent = nullptr;
@@ -456,12 +452,6 @@ URIEquals(nsIURI *a, nsIURI *b)
   return (!a && !b) || (a && b && NS_SUCCEEDED(a->Equals(b, &equal)) && equal);
 }
 
-static bool
-IsSupportedImage(const nsCString& aMimeType)
-{
-  return imgLoader::SupportImageWithMimeType(aMimeType.get());
-}
-
 static void
 GetExtensionFromURI(nsIURI* uri, nsCString& ext)
 {
@@ -561,50 +551,6 @@ nsObjectLoadingContent::MakePluginListener()
 }
 
 
-bool
-nsObjectLoadingContent::IsSupportedDocument(const nsCString& aMimeType)
-{
-  nsCOMPtr<nsIContent> thisContent =
-    do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
-  NS_ASSERTION(thisContent, "must be a content");
-
-  nsCOMPtr<nsIWebNavigationInfo> info(
-    do_GetService(NS_WEBNAVIGATION_INFO_CONTRACTID));
-  if (!info) {
-    return false;
-  }
-
-  nsCOMPtr<nsIWebNavigation> webNav;
-  nsIDocument* currentDoc = thisContent->GetComposedDoc();
-  if (currentDoc) {
-    webNav = do_GetInterface(currentDoc->GetWindow());
-  }
-
-  uint32_t supported;
-  nsresult rv = info->IsTypeSupported(aMimeType, webNav, &supported);
-
-  if (NS_FAILED(rv)) {
-    return false;
-  }
-
-  if (supported != nsIWebNavigationInfo::UNSUPPORTED) {
-    // Don't want to support plugins as documents
-    return supported != nsIWebNavigationInfo::PLUGIN;
-  }
-
-  // Try a stream converter
-  // NOTE: We treat any type we can convert from as a supported type. If a
-  // type is not actually supported, the URI loader will detect that and
-  // return an error, and we'll fallback.
-  nsCOMPtr<nsIStreamConverterService> convServ =
-    do_GetService("@mozilla.org/streamConverters;1");
-  bool canConvert = false;
-  if (convServ) {
-    rv = convServ->CanConvert(aMimeType.get(), "*/*", &canConvert);
-  }
-  return NS_SUCCEEDED(rv) && canConvert;
-}
-
 nsresult
 nsObjectLoadingContent::BindToTree(nsIDocument* aDocument,
                                    nsIContent* aParent,
@@ -663,7 +609,7 @@ nsObjectLoadingContent::nsObjectLoadingContent()
   , mInstantiating(false)
   , mNetworkCreated(true)
   , mActivated(false)
-  , mContentBlockingDisabled(false)
+  , mContentBlockingEnabled(false)
   , mIsStopping(false)
   , mIsLoading(false)
   , mScriptRequested(false)
@@ -817,7 +763,7 @@ nsObjectLoadingContent::InstantiatePluginInstance(bool aIsLoading)
                                          EmptyString(), &blockState);
       if (blockState == nsIBlocklistService::STATE_OUTDATED) {
         // Fire plugin outdated event if necessary
-        LOG(("OBJLC [%p]: Dispatching plugin outdated event for content %p\n",
+        LOG(("OBJLC [%p]: Dispatching plugin outdated event for content\n",
              this));
         nsCOMPtr<nsIRunnable> ev = new nsSimplePluginEvent(thisContent,
                                                      NS_LITERAL_STRING("PluginOutdated"));
@@ -1039,10 +985,9 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest *aRequest,
     }
     if (MakePluginListener()) {
       return mFinalListener->OnStartRequest(aRequest, nullptr);
-    } else {
-      NS_NOTREACHED("Failed to create PluginStreamListener, aborting channel");
-      return NS_BINDING_ABORTED;
     }
+    NS_NOTREACHED("Failed to create PluginStreamListener, aborting channel");
+    return NS_BINDING_ABORTED;
   }
 
   // Otherwise we should be state loading, and call LoadObject with the channel
@@ -1058,7 +1003,7 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest *aRequest,
   nsCOMPtr<nsIChannel> chan(do_QueryInterface(aRequest));
   NS_ASSERTION(chan, "Why is our request not a channel?");
 
-  nsresult status;
+  nsresult status = NS_OK;
   bool success = IsSuccessfulRequest(aRequest, &status);
 
   if (status == NS_ERROR_BLOCKED_URI) {
@@ -1073,11 +1018,12 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest *aRequest,
       console->LogStringMessage(message.get());
     }
     Telemetry::Accumulate(Telemetry::PLUGIN_BLOCKED_FOR_STABILITY, 1);
+    mContentBlockingEnabled = true;
     return NS_ERROR_FAILURE;
-  } else if (status == NS_ERROR_TRACKING_URI) {
+  }
+  if (status == NS_ERROR_TRACKING_URI) {
+    mContentBlockingEnabled = true;
     return NS_ERROR_FAILURE;
-  } else {
-    mContentBlockingDisabled = true;
   }
 
   if (!success) {
@@ -2429,7 +2375,8 @@ nsObjectLoadingContent::LoadObject(bool aNotify,
       // If our type remains Loading, we need a channel to proceed
       rv = OpenChannel();
       if (NS_FAILED(rv)) {
-        LOG(("OBJLC [%p]: OpenChannel returned failure (%u)", this, rv));
+        LOG(("OBJLC [%p]: OpenChannel returned failure (%" PRIu32 ")",
+             this, static_cast<uint32_t>(rv)));
       }
     break;
     case eType_Null:
@@ -2591,18 +2538,21 @@ nsObjectLoadingContent::OpenChannel()
                      shim,  // aCallbacks
                      nsIChannel::LOAD_CALL_CONTENT_SNIFFERS |
                      nsIChannel::LOAD_CLASSIFY_URI |
-                     nsIChannel::LOAD_BYPASS_SERVICE_WORKER);
+                     nsIChannel::LOAD_BYPASS_SERVICE_WORKER |
+                     nsIRequest::LOAD_HTML_OBJECT_DATA);
   NS_ENSURE_SUCCESS(rv, rv);
   if (inherit) {
     nsCOMPtr<nsILoadInfo> loadinfo = chan->GetLoadInfo();
+    NS_ENSURE_STATE(loadinfo);
     loadinfo->SetPrincipalToInherit(thisContent->NodePrincipal());
   }
 
   // Referrer
   nsCOMPtr<nsIHttpChannel> httpChan(do_QueryInterface(chan));
   if (httpChan) {
-    httpChan->SetReferrerWithPolicy(doc->GetDocumentURI(),
-                                    doc->GetReferrerPolicy());
+    rv = httpChan->SetReferrerWithPolicy(doc->GetDocumentURI(),
+                                         doc->GetReferrerPolicy());
+    MOZ_ASSERT(NS_SUCCEEDED(rv));
 
     // Set the initiator type
     nsCOMPtr<nsITimedChannel> timedChannel(do_QueryInterface(httpChan));
@@ -2706,7 +2656,7 @@ nsObjectLoadingContent::NotifyStateChanged(ObjectType aOldType,
                                            bool aSync,
                                            bool aNotify)
 {
-  LOG(("OBJLC [%p]: Notifying about state change: (%u, %llx) -> (%u, %llx)"
+  LOG(("OBJLC [%p]: Notifying about state change: (%u, %" PRIx64 ") -> (%u, %" PRIx64 ")"
        " (sync %i, notify %i)", this, aOldType, aOldState.GetInternalValue(),
        mType, ObjectState().GetInternalValue(), aSync, aNotify));
 
@@ -2762,43 +2712,26 @@ nsObjectLoadingContent::NotifyStateChanged(ObjectType aOldType,
 nsObjectLoadingContent::ObjectType
 nsObjectLoadingContent::GetTypeOfContent(const nsCString& aMIMEType)
 {
-  if (aMIMEType.IsEmpty()) {
-    return eType_Null;
-  }
+  nsCOMPtr<nsIContent> thisContent =
+    do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
+  NS_ASSERTION(thisContent, "must be a content");
 
+  ObjectType type = static_cast<ObjectType>(
+    nsContentUtils::HtmlObjectContentTypeForMIMEType(aMIMEType, thisContent));
+
+  // Switch the result type to eType_Null ic the capability is not present.
   uint32_t caps = GetCapabilities();
-
-  if ((caps & eSupportImages) && IsSupportedImage(aMIMEType)) {
-    return eType_Image;
+  if (!(caps & eSupportImages) && type == eType_Image) {
+    type = eType_Null;
+  }
+  if (!(caps & eSupportDocuments) && type == eType_Document) {
+    type = eType_Null;
+  }
+  if (!(caps & eSupportPlugins) && type == eType_Plugin) {
+    type = eType_Null;
   }
 
-  // Faking support of the PDF content as a document for EMBED tags
-  // when internal PDF viewer is enabled.
-  if (aMIMEType.LowerCaseEqualsLiteral("application/pdf") &&
-      nsContentUtils::IsPDFJSEnabled()) {
-    return eType_Document;
-  }
-
-  // Faking support of the SWF content as a document for EMBED tags
-  // when internal SWF player is enabled.
-  if (aMIMEType.LowerCaseEqualsLiteral("application/x-shockwave-flash") &&
-      nsContentUtils::IsSWFPlayerEnabled()) {
-    return eType_Document;
-  }
-
-  if ((caps & eSupportDocuments) && IsSupportedDocument(aMIMEType)) {
-    return eType_Document;
-  }
-
-  RefPtr<nsPluginHost> pluginHost = nsPluginHost::GetInst();
-  if ((caps & eSupportPlugins) &&
-      pluginHost &&
-      pluginHost->HavePluginForType(aMIMEType, nsPluginHost::eExcludeNone)) {
-    // ShouldPlay will handle checking for disabled plugins
-    return eType_Plugin;
-  }
-
-  return eType_Null;
+  return type;
 }
 
 nsPluginFrame*
@@ -3017,7 +2950,7 @@ nsObjectLoadingContent::LoadFallback(FallbackType aType, bool aNotify) {
   // Fixup mFallbackType
   //
   nsCOMPtr<nsIContent> thisContent =
-  do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
+    do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
   NS_ASSERTION(thisContent, "must be a content");
 
   if (!thisContent->IsHTMLElement() || mContentType.IsEmpty()) {
@@ -3030,8 +2963,10 @@ nsObjectLoadingContent::LoadFallback(FallbackType aType, bool aNotify) {
   // child embeds as we find them in the upcoming loop.
   mType = eType_Null;
 
-  // Do a breadth-first traverse of node tree with the current element as root,
-  // looking for the first embed we can find.
+  bool thisIsObject = thisContent->IsHTMLElement(nsGkAtoms::object);
+
+  // Do a depth-first traverse of node tree with the current element as root,
+  // looking for <embed> or <object> elements that might now need to load.
   nsTArray<nsINodeList*> childNodes;
   if ((thisContent->IsHTMLElement(nsGkAtoms::object) ||
        thisContent->IsHTMLElement(nsGkAtoms::applet)) &&
@@ -3047,10 +2982,11 @@ nsObjectLoadingContent::LoadFallback(FallbackType aType, bool aNotify) {
           nsStyleUtil::IsSignificantChild(child, true, false)) {
         aType = eFallbackAlternate;
       }
-      if (child->IsHTMLElement(nsGkAtoms::embed) &&
-          thisContent->IsHTMLElement(nsGkAtoms::object)) {
-        HTMLSharedObjectElement* object = static_cast<HTMLSharedObjectElement*>(child);
-        if (object) {
+      if (thisIsObject) {
+        if (child->IsHTMLElement(nsGkAtoms::embed)) {
+          HTMLSharedObjectElement* embed = static_cast<HTMLSharedObjectElement*>(child);
+          embed->StartObjectLoad(true, true);
+        } else if (auto object = HTMLObjectElement::FromContent(child)) {
           object->StartObjectLoad(true, true);
         }
       }
@@ -3224,19 +3160,34 @@ nsObjectLoadingContent::GetRunID(SystemCallerGuarantee, ErrorResult& aRv)
 static bool sPrefsInitialized;
 static uint32_t sSessionTimeoutMinutes;
 static uint32_t sPersistentTimeoutDays;
+static bool sBlockURIs;
+
+static void initializeObjectLoadingContentPrefs()
+{
+  if (!sPrefsInitialized) {
+    Preferences::AddUintVarCache(&sSessionTimeoutMinutes,
+                                 "plugin.sessionPermissionNow.intervalInMinutes", 60);
+    Preferences::AddUintVarCache(&sPersistentTimeoutDays,
+                                 "plugin.persistentPermissionAlways.intervalInDays", 90);
+
+    Preferences::AddBoolVarCache(&sBlockURIs, kPrefBlockURIs, false);
+    sPrefsInitialized = true;
+  }
+}
 
 bool
 nsObjectLoadingContent::ShouldBlockContent()
 {
-  if (mContentBlockingDisabled || !mURI)
-    return false;
-
-  if (!IsFlashMIME(mContentType) || !Preferences::GetBool(kPrefBlockURIs)) {
-    mContentBlockingDisabled = true;
-    return false;
+ 
+  if (!sPrefsInitialized) {
+    initializeObjectLoadingContentPrefs();
   }
 
-  return true;
+  if (mContentBlockingEnabled && mURI && IsFlashMIME(mContentType) && sBlockURIs ) {
+    return true;
+  }
+
+  return false;
 }
 
 bool
@@ -3245,11 +3196,7 @@ nsObjectLoadingContent::ShouldPlay(FallbackType &aReason, bool aIgnoreCurrentTyp
   nsresult rv;
 
   if (!sPrefsInitialized) {
-    Preferences::AddUintVarCache(&sSessionTimeoutMinutes,
-                                 "plugin.sessionPermissionNow.intervalInMinutes", 60);
-    Preferences::AddUintVarCache(&sPersistentTimeoutDays,
-                                 "plugin.persistentPermissionAlways.intervalInDays", 90);
-    sPrefsInitialized = true;
+    initializeObjectLoadingContentPrefs();
   }
 
   if (BrowserTabsRemoteAutostart()) {
@@ -3327,11 +3274,11 @@ nsObjectLoadingContent::ShouldPlay(FallbackType &aReason, bool aIgnoreCurrentTyp
   NS_ENSURE_TRUE(topDoc, false);
 
   // Check the flash blocking status for this page (this applies to Flash only)
-  nsIDocument::FlashClassification documentClassification = nsIDocument::FlashClassification::Allowed;
+  FlashClassification documentClassification = FlashClassification::Allowed;
   if (IsFlashMIME(mContentType)) {
     documentClassification = ownerDoc->DocumentFlashClassification();
   }
-  if (documentClassification == nsIDocument::FlashClassification::Denied) {
+  if (documentClassification == FlashClassification::Denied) {
     aReason = eFallbackSuppressed;
     return false;
   }
@@ -3404,7 +3351,7 @@ nsObjectLoadingContent::ShouldPlay(FallbackType &aReason, bool aIgnoreCurrentTyp
 
   switch (enabledState) {
   case nsIPluginTag::STATE_ENABLED:
-    return documentClassification == nsIDocument::FlashClassification::Allowed;
+    return documentClassification == FlashClassification::Allowed;
   case nsIPluginTag::STATE_CLICKTOPLAY:
     return false;
   }
@@ -3803,6 +3750,38 @@ nsObjectLoadingContent::MaybeFireErrorEvent()
                                            false, false);
     loadBlockingAsyncDispatcher->PostDOMEvent();
   }
+}
+
+bool
+nsObjectLoadingContent::BlockEmbedOrObjectContentLoading()
+{
+  nsCOMPtr<nsIContent> thisContent =
+    do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
+  if (!thisContent->IsHTMLElement(nsGkAtoms::embed) &&
+      !thisContent->IsHTMLElement(nsGkAtoms::object)) {
+    // Doesn't apply to other elements (i.e. <applet>)
+    return false;
+  }
+
+  // Traverse up the node tree to see if we have any ancestors that may block us
+  // from loading
+  for (nsIContent* parent = thisContent->GetParent();
+       parent;
+       parent = parent->GetParent()) {
+    if (parent->IsAnyOfHTMLElements(nsGkAtoms::video, nsGkAtoms::audio)) {
+      return true;
+    }
+    // If we have an ancestor that is an object with a source, it'll have an
+    // associated displayed type. If that type is not null, don't load content
+    // for the embed.
+    if (HTMLObjectElement* object = HTMLObjectElement::FromContent(parent)) {
+      uint32_t type = object->DisplayedType();
+      if (type != eType_Null) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // SetupProtoChainRunner implementation

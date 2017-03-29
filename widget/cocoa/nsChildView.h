@@ -105,6 +105,8 @@ class WidgetRenderingContext;
 - (void)setTransparent:(BOOL)transparent; // Method of NSTitlebarView and
                                           // NSTitlebarContainerView
 
+// Available since 10.7.4:
+- (void)viewDidChangeBackingProperties;
 @end
 
 @interface ChildView : NSView<
@@ -396,7 +398,6 @@ public:
                       void* aCallbackData,
                       uint32_t aGeckoKeyCode,
                       uint32_t aCocoaKeyCode);
-  virtual nsIMEUpdatePreference GetIMEUpdatePreference() override;
 
   virtual nsTransparencyMode GetTransparencyMode() override;
   virtual void                SetTransparencyMode(nsTransparencyMode aMode) override;

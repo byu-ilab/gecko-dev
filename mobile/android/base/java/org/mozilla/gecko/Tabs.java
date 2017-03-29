@@ -5,6 +5,7 @@
 
 package org.mozilla.gecko;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -12,12 +13,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import android.support.annotation.Nullable;
-import org.json.JSONException;
-import org.json.JSONObject;
 
 import org.mozilla.gecko.annotation.JNITarget;
 import org.mozilla.gecko.annotation.RobocopTarget;
-import org.mozilla.gecko.AppConstants.Versions;
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.gfx.LayerView;
 import org.mozilla.gecko.mozglue.SafeIntent;
@@ -26,6 +24,7 @@ import org.mozilla.gecko.reader.ReaderModeUtils;
 import org.mozilla.gecko.util.BundleEventListener;
 import org.mozilla.gecko.util.EventCallback;
 import org.mozilla.gecko.util.GeckoBundle;
+import org.mozilla.gecko.util.JavaUtil;
 import org.mozilla.gecko.util.ThreadUtils;
 
 import android.accounts.Account;
@@ -39,14 +38,20 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Handler;
 import android.provider.Browser;
+import android.support.annotation.UiThread;
 import android.support.v4.content.ContextCompat;
 import android.util.Log;
+
+import static org.mozilla.gecko.Tab.TabType;
 
 public class Tabs implements BundleEventListener {
     private static final String LOGTAG = "GeckoTabs";
 
     // mOrder and mTabs are always of the same cardinality, and contain the same values.
-    private final CopyOnWriteArrayList<Tab> mOrder = new CopyOnWriteArrayList<Tab>();
+    private volatile CopyOnWriteArrayList<Tab> mOrder = new CopyOnWriteArrayList<Tab>();
+
+    // A cache that maps a tab ID to an mOrder tab position.  All access should be synchronized.
+    private final TabPositionCache tabPositionCache = new TabPositionCache();
 
     // All writes to mSelectedTab must be synchronized on the Tabs instance.
     // In general, it's preferred to always use selectTab()).
@@ -115,6 +120,7 @@ public class Tabs implements BundleEventListener {
     private Tabs() {
         EventDispatcher.getInstance().registerUiThreadListener(this,
             "Content:LocationChange",
+            "Content:SubframeNavigation",
             "Content:SecurityChange",
             "Content:StateChange",
             "Content:LoadError",
@@ -133,6 +139,11 @@ public class Tabs implements BundleEventListener {
             "Tab:RecordingChange",
             "Tab:Select",
             "Tab:SetParentId",
+            null);
+
+        EventDispatcher.getInstance().registerBackgroundThreadListener(this,
+            // BrowserApp already wants this on the background thread.
+            "Sanitize:ClearHistory",
             null);
 
         mPrivateClearColor = Color.RED;
@@ -172,8 +183,8 @@ public class Tabs implements BundleEventListener {
     }
 
     /**
-     * Gets the tab count corresponding to the private state of the selected
-     * tab.
+     * Gets the tab count corresponding to the category and private state of the
+     * selected tab.
      *
      * If the selected tab is a non-private tab, this will return the number of
      * non-private tabs; likewise, if this is a private tab, this will return
@@ -185,9 +196,10 @@ public class Tabs implements BundleEventListener {
         // Once mSelectedTab is non-null, it cannot be null for the remainder
         // of the object's lifetime.
         boolean getPrivate = mSelectedTab != null && mSelectedTab.isPrivate();
+        TabType type = mSelectedTab != null ? mSelectedTab.getType() : TabType.BROWSING;
         int count = 0;
         for (Tab tab : mOrder) {
-            if (tab.isPrivate() == getPrivate) {
+            if (tab.isPrivate() == getPrivate && tab.getType() == type) {
                 count++;
             }
         }
@@ -221,15 +233,18 @@ public class Tabs implements BundleEventListener {
         }
     }
 
-    private Tab addTab(int id, String url, boolean external, int parentId, String title, boolean isPrivate, int tabIndex) {
-        final Tab tab = isPrivate ? new PrivateTab(mAppContext, id, url, external, parentId, title) :
-                                    new Tab(mAppContext, id, url, external, parentId, title);
+    private Tab addTab(int id, String url, boolean external, int parentId, String title, boolean isPrivate, int tabIndex, TabType type) {
+        final Tab tab = isPrivate ? new PrivateTab(mAppContext, id, url, external, parentId, title, type) :
+                                    new Tab(mAppContext, id, url, external, parentId, title, type);
         synchronized (this) {
             lazyRegisterBookmarkObserver();
             mTabs.put(id, tab);
 
             if (tabIndex > -1) {
                 mOrder.add(tabIndex, tab);
+                if (tabPositionCache.mOrderPosition >= tabIndex) {
+                    tabPositionCache.mTabId = INVALID_TAB_ID;
+                }
             } else {
                 mOrder.add(tab);
             }
@@ -238,19 +253,20 @@ public class Tabs implements BundleEventListener {
         // Suppress the ADDED event to prevent animation of tabs created via session restore.
         if (mInitialTabsAdded) {
             notifyListeners(tab, TabEvents.ADDED,
-                    Integer.toString(getPrivacySpecificTabIndex(tabIndex, isPrivate)));
+                    Integer.toString(getPrivacySpecificTabIndex(tabIndex, isPrivate, type)));
         }
 
         return tab;
     }
 
-    // Return the index, among those tabs whose privacy setting matches isPrivate, of the tab at
-    // position index in mOrder.  Returns -1, for "new last tab", when index is -1.
-    private int getPrivacySpecificTabIndex(int index, boolean isPrivate) {
+    // Return the index, among those tabs of the chosen type whose privacy setting matches
+    // isPrivate, of the tab at position index in mOrder.  Returns -1, for "new last tab",
+    // when index is -1.
+    private int getPrivacySpecificTabIndex(int index, boolean isPrivate, TabType type) {
         int privacySpecificIndex = -1;
         for (int i = 0; i <= index; i++) {
             final Tab tab = mOrder.get(i);
-            if (tab.isPrivate() == isPrivate) {
+            if (tab.isPrivate() == isPrivate && tab.getType() == type) {
                 privacySpecificIndex++;
             }
         }
@@ -262,6 +278,7 @@ public class Tabs implements BundleEventListener {
             Tab tab = getTab(id);
             mOrder.remove(tab);
             mTabs.remove(id);
+            tabPositionCache.mTabId = INVALID_TAB_ID;
         }
     }
 
@@ -309,23 +326,23 @@ public class Tabs implements BundleEventListener {
         return mOrder.lastIndexOf(tab);
     }
 
-    private Tab getNextTabFrom(Tab tab, boolean getPrivate) {
+    private Tab getNextTabFrom(Tab tab, boolean getPrivate, TabType type) {
         int numTabs = mOrder.size();
         int index = getIndexOf(tab);
         for (int i = index + 1; i < numTabs; i++) {
             Tab next = mOrder.get(i);
-            if (next.isPrivate() == getPrivate) {
+            if (next.isPrivate() == getPrivate && next.getType() == type) {
                 return next;
             }
         }
         return null;
     }
 
-    private Tab getPreviousTabFrom(Tab tab, boolean getPrivate) {
+    private Tab getPreviousTabFrom(Tab tab, boolean getPrivate, TabType type) {
         int index = getIndexOf(tab);
         for (int i = index - 1; i >= 0; i--) {
             Tab prev = mOrder.get(i);
-            if (prev.isPrivate() == getPrivate) {
+            if (prev.isPrivate() == getPrivate && prev.getType() == type) {
                 return prev;
             }
         }
@@ -426,17 +443,18 @@ public class Tabs implements BundleEventListener {
             return selectedTab;
 
         boolean getPrivate = tab.isPrivate();
-        Tab nextTab = getNextTabFrom(tab, getPrivate);
+        TabType type = tab.getType();
+        Tab nextTab = getNextTabFrom(tab, getPrivate, type);
         if (nextTab == null)
-            nextTab = getPreviousTabFrom(tab, getPrivate);
+            nextTab = getPreviousTabFrom(tab, getPrivate, type);
         if (nextTab == null && getPrivate) {
-            // If there are no private tabs remaining, get the last normal tab
-            Tab lastTab = mOrder.get(mOrder.size() - 1);
-            if (!lastTab.isPrivate()) {
-                nextTab = lastTab;
-            } else {
-                nextTab = getPreviousTabFrom(lastTab, false);
-            }
+            // If there are no private tabs remaining, get the last normal tab.
+            nextTab = getFallbackNextTab(type);
+        }
+        if (nextTab == null && type != TabType.BROWSING) {
+            // If there are no non-private tabs of the same type remaining,
+            // fall back to TabType.BROWSING.
+            nextTab = getFallbackNextTab(TabType.BROWSING);
         }
 
         Tab parent = getTab(tab.getParentId());
@@ -446,6 +464,26 @@ public class Tabs implements BundleEventListener {
                 return nextTab;
             else
                 return parent;
+        }
+        return nextTab;
+    }
+
+    /**
+     * Normally, {@link #getNextTab(Tab)} will attempt to find a tab of the same privacy mode and
+     * {@link TabType} as the currently selected tab. If no such tab exists, we will first fall back
+     * to non-private tabs if the current tab is a private tab. If we can't find any non-private
+     * tabs of the same type, we then start looking for any non-private {@link TabType#BROWSING} tabs.
+     *
+     * @param type The {@link TabType} of tab to be searched.
+     * @return A non-private tab of the type specified or null if none could be found.
+     */
+    private Tab getFallbackNextTab(TabType type) {
+        Tab nextTab;
+        Tab lastTab = mOrder.get(mOrder.size() - 1);
+        if (!lastTab.isPrivate() && lastTab.getType() == type) {
+            nextTab = lastTab;
+        } else {
+            nextTab = getPreviousTabFrom(lastTab, false, type);
         }
         return nextTab;
     }
@@ -482,6 +520,21 @@ public class Tabs implements BundleEventListener {
     @Override // BundleEventListener
     public synchronized void handleMessage(final String event, final GeckoBundle message,
                                            final EventCallback callback) {
+        if ("Sanitize:ClearHistory".equals(event)) {
+            ThreadUtils.postToUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    // Tab session history will be cleared as well,
+                    // so we need to reset the navigation buttons.
+                    for (final Tab tab : mOrder) {
+                        tab.handleButtonStateChange(false, false);
+                        notifyListeners(tab, TabEvents.LOCATION_CHANGE, tab.getURL());
+                    }
+                }
+            });
+            return;
+        }
+
         // All other events handled below should contain a tabID property
         final int id = message.getInt("tabID", -1);
         Tab tab = getTab(id);
@@ -507,7 +560,8 @@ public class Tabs implements BundleEventListener {
                                       message.getInt("parentId"),
                                       message.getString("title"),
                                       message.getBoolean("isPrivate"),
-                                      message.getInt("tabIndex"));
+                                      message.getInt("tabIndex"),
+                                      TabType.valueOf(message.getString("tabType")));
                 // If we added the tab as a stub, we should have already
                 // selected it, so ignore this flag for stubbed tabs.
                 if (message.getBoolean("selected"))
@@ -536,6 +590,10 @@ public class Tabs implements BundleEventListener {
 
         } else if ("Content:LocationChange".equals(event)) {
             tab.handleLocationChange(message);
+
+        } else if ("Content:SubframeNavigation".equals(event)) {
+            tab.handleButtonStateChange(message);
+            notifyListeners(tab, TabEvents.LOCATION_CHANGE, tab.getURL());
 
         } else if ("Content:SecurityChange".equals(event)) {
             tab.updateIdentityData(message.getBundle("identity"));
@@ -593,7 +651,7 @@ public class Tabs implements BundleEventListener {
             tab.setHasOpenSearch(message.getBoolean("visible"));
 
         } else if ("Link:Manifest".equals(event)) {
-            tab.setHasManifest(true);
+            tab.setManifestUrl(message.getString("href"));
 
         } else if ("DesktopMode:Changed".equals(event)) {
             tab.setDesktopMode(message.getBoolean("desktopMode"));
@@ -662,6 +720,7 @@ public class Tabs implements BundleEventListener {
         UNSELECTED,
         ADDED,
         RESTORED,
+        MOVED,
         LOCATION_CHANGE,
         MENU_UPDATED,
         PAGE_SHOW,
@@ -765,7 +824,7 @@ public class Tabs implements BundleEventListener {
      * @return first Tab with the given URL, or null if there is no such tab.
      */
     public Tab getFirstTabForUrl(String url) {
-        return getFirstTabForUrlHelper(url, null);
+        return getFirstTabForUrlHelper(url, null, TabType.BROWSING);
     }
 
     /**
@@ -773,20 +832,21 @@ public class Tabs implements BundleEventListener {
      * @param url       the URL of the tab we're looking for
      * @param isPrivate if true, only look for tabs that are private. if false,
      *                  only look for tabs that are non-private.
+     * @param type      the type of the tab we're looking for
      *
      * @return first Tab with the given URL, or null if there is no such tab.
      */
-    public Tab getFirstTabForUrl(String url, boolean isPrivate) {
-        return getFirstTabForUrlHelper(url, isPrivate);
+    public Tab getFirstTabForUrl(String url, boolean isPrivate, TabType type) {
+        return getFirstTabForUrlHelper(url, isPrivate, type);
     }
 
-    private Tab getFirstTabForUrlHelper(String url, Boolean isPrivate) {
+    private Tab getFirstTabForUrlHelper(String url, Boolean isPrivate, TabType type) {
         if (url == null) {
             return null;
         }
 
         for (Tab tab : mOrder) {
-            if (isPrivate != null && isPrivate != tab.isPrivate()) {
+            if (isPrivate != null && isPrivate != tab.isPrivate() || type != tab.getType()) {
                 continue;
             }
             if (url.equals(tab.getURL())) {
@@ -807,11 +867,13 @@ public class Tabs implements BundleEventListener {
      * @param isPrivate
      *            If true, only look for tabs that are private. If false, only
      *            look for tabs that are not private.
+     * @param type
+     *            The type of the tab we're looking for.
      *
      * @return The first Tab with the given URL, or null if there is no such
      *         tab.
      */
-    public Tab getFirstReaderTabForUrl(String url, boolean isPrivate) {
+    public Tab getFirstReaderTabForUrl(String url, boolean isPrivate, TabType type) {
         if (url == null) {
             return null;
         }
@@ -819,7 +881,7 @@ public class Tabs implements BundleEventListener {
         url = ReaderModeUtils.stripAboutReaderUrl(url);
 
         for (Tab tab : mOrder) {
-            if (isPrivate != tab.isPrivate()) {
+            if (isPrivate != tab.isPrivate() || type != tab.getType()) {
                 continue;
             }
             String tabUrl = tab.getURL();
@@ -837,7 +899,7 @@ public class Tabs implements BundleEventListener {
     /**
      * Loads a tab with the given URL in the currently selected tab.
      *
-     * @param url URL of page to load, or search term used if searchEngine is given
+     * @param url URL of page to load
      */
     @RobocopTarget
     public Tab loadUrl(String url) {
@@ -847,7 +909,7 @@ public class Tabs implements BundleEventListener {
     /**
      * Loads a tab with the given URL.
      *
-     * @param url   URL of page to load, or search term used if searchEngine is given
+     * @param url   URL of page to load
      * @param flags flags used to load tab
      *
      * @return      the Tab if a new one was created; null otherwise
@@ -901,6 +963,7 @@ public class Tabs implements BundleEventListener {
         boolean external = (flags & LOADURL_EXTERNAL) != 0;
         final boolean isFirstShownAfterActivityUnhidden = (flags & LOADURL_FIRST_AFTER_ACTIVITY_UNHIDDEN) != 0;
         final boolean customTab = (flags & LOADURL_CUSTOMTAB) != 0;
+        final TabType type = customTab ? TabType.CUSTOMTAB : TabType.BROWSING;
 
         data.putString("url", url);
         data.putString("engine", searchEngine);
@@ -909,7 +972,7 @@ public class Tabs implements BundleEventListener {
         data.putBoolean("isPrivate", isPrivate);
         data.putBoolean("pinned", (flags & LOADURL_PINNED) != 0);
         data.putBoolean("desktopMode", desktopMode);
-        data.putBoolean("customTab", customTab);
+        data.putString("tabType", type.name());
 
         final boolean needsNewTab;
         final String applicationId = (intent == null) ? null :
@@ -958,7 +1021,7 @@ public class Tabs implements BundleEventListener {
             // Add the new tab to the end of the tab order.
             final int tabIndex = -1;
 
-            tabToSelect = addTab(tabId, tabUrl, external, parentId, url, isPrivate, tabIndex);
+            tabToSelect = addTab(tabId, tabUrl, external, parentId, url, isPrivate, tabIndex, type);
             tabToSelect.setDesktopMode(desktopMode);
             tabToSelect.setApplicationId(applicationId);
             if (isFirstShownAfterActivityUnhidden) {
@@ -1046,5 +1109,109 @@ public class Tabs implements BundleEventListener {
         }
 
         return Color.WHITE;
+    }
+
+    /** Holds a tab id and the index in {@code mOrder} of the tab having that id. */
+    private static class TabPositionCache {
+        int mTabId;
+        int mOrderPosition;
+
+        TabPositionCache() {
+            mTabId = INVALID_TAB_ID;
+        }
+
+        void cache(int tabId, int position) {
+            mTabId = tabId;
+            mOrderPosition = position;
+        }
+    }
+
+    /**
+     * Search for {@code tabId} in {@code mOrder}, starting from position {@code positionHint}.
+     * Callers must be synchronized.
+     * @param tabId The tab id of the tab being searched for.
+     * @param positionHint Must be less than or equal to the actual position in mOrder if searching
+     *                     forward, otherwise must be greater than or equal to the actual position.
+     * @param searchForward Search forward from {@code positionHint} if true, otherwise search
+     *                      backward from {@code positionHint}.
+     * @return The position in mOrder of the tab with tab id {@code tabId}.
+     */
+    private int getOrderPositionForTab(int tabId, int positionHint, boolean searchForward) {
+        final int step = searchForward ? 1 : -1;
+        final int stopPosition = searchForward ? mOrder.size() : -1;
+        for (int i = positionHint; i != stopPosition; i += step) {
+            if (mOrder.get(i).getId() == tabId) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * @param fromTabId Id of the tab to move.
+     * @param fromPositionHint Position of the from tab amongst either all non-private tabs or all
+     *                         private tabs, whichever the caller happens to be moving in.
+     * @param toTabId Id of the tab in the position the from tab should be moved to.
+     * @param toPositionHint Position of the to tab amongst either all non-private tabs or all
+     *                       private tabs, whichever the caller happens to be moving in.
+     */
+    @UiThread
+    public void moveTab(int fromTabId, int fromPositionHint, int toTabId, int toPositionHint) {
+        if (fromPositionHint == toPositionHint) {
+            return;
+        }
+
+        // The provided position hints index into either all private tabs or all non-private tabs,
+        // but we need the indices with respect to mOrder, which lists all tabs, both private and
+        // non-private, in the order in which they were added.
+
+        // The positions in mOrder of the from and to tabs.
+        final int fromPosition;
+        final int toPosition;
+        synchronized (this) {
+            if (tabPositionCache.mTabId == fromTabId) {
+                fromPosition = tabPositionCache.mOrderPosition;
+            } else {
+                fromPosition = getOrderPositionForTab(fromTabId, fromPositionHint, true);
+            }
+
+            // Start the toPosition search from the mOrder from position.
+            final int adjustedToPositionHint = fromPosition + (toPositionHint - fromPositionHint);
+            toPosition = getOrderPositionForTab(toTabId, adjustedToPositionHint, fromPositionHint < toPositionHint);
+            // Remember where the tab was moved to so that if this move continues we'll be ready.
+            tabPositionCache.cache(fromTabId, toPosition);
+
+            if (fromPosition == -1 || toPosition == -1) {
+                throw new IllegalStateException("Tabs search failed: (" + fromPositionHint + ", " + toPositionHint + ")" +
+                        " --> (" + fromPosition + ", " + toPosition + ")");
+            }
+
+            // Updating mOrder requires the creation of two new tabs arrays, one for newTabsArray,
+            // and one when mOrder is reassigned - note that that's the best we can ever do (as long
+            // as mOrder is a CopyOnWriteArrayList) even if fromPosition and toPosition only differ
+            // by one, which is the common case.
+            final Tab[] newTabsArray = new Tab[mOrder.size()];
+            mOrder.toArray(newTabsArray);
+            // Creates a List backed by newTabsArray.
+            final List<Tab> newTabsList = Arrays.asList(newTabsArray);
+            JavaUtil.moveInList(newTabsList, fromPosition, toPosition);
+            // (Note that there's no way to atomically update the current mOrder with our new list,
+            // and hence no way (short of synchronizing all readers of mOrder) to prevent readers on
+            // other threads from possibly choosing to start iterating mOrder in between when we
+            // might mOrder.clear() and then mOrder.addAll(newTabsArray) if we were to repopulate
+            // mOrder in place.)
+            mOrder = new CopyOnWriteArrayList<>(newTabsList);
+        }
+
+        queuePersistAllTabs();
+
+        notifyListeners(mOrder.get(toPosition), TabEvents.MOVED);
+
+        final GeckoBundle data = new GeckoBundle();
+        data.putInt("fromTabId", fromTabId);
+        data.putInt("fromPosition", fromPosition);
+        data.putInt("toTabId", toTabId);
+        data.putInt("toPosition", toPosition);
+        EventDispatcher.getInstance().dispatch("Tab:Move", data);
     }
 }

@@ -9,6 +9,7 @@
 #include "base/win/windows_version.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/Logging.h"
+#include "mozilla/NSPRLogModulesParser.h"
 #include "sandbox/win/src/sandbox.h"
 #include "sandbox/win/src/security_level.h"
 
@@ -70,6 +71,38 @@ SandboxBroker::LaunchApp(const wchar_t *aPath,
                      sandbox::TargetPolicy::FILES_ALLOW_ANY, tempPath);
   }
 #endif
+
+  // Enable the child process to write log files when setup
+  wchar_t const* logFileName = _wgetenv(L"MOZ_LOG_FILE");
+  char const* logFileModules = getenv("MOZ_LOG");
+  if (logFileName && logFileModules) {
+    bool rotate = false;
+    NSPRLogModulesParser(logFileModules,
+      [&rotate](const char* aName, LogLevel aLevel, int32_t aValue) mutable {
+        if (strcmp(aName, "rotate") == 0) {
+          // Less or eq zero means to turn rotate off.
+          rotate = aValue > 0;
+        }
+      }
+    );
+
+    if (rotate) {
+      wchar_t logFileNameWild[MAX_PATH + 2];
+      _snwprintf(logFileNameWild, sizeof(logFileNameWild), L"%s.?", logFileName);
+
+      mPolicy->AddRule(sandbox::TargetPolicy::SUBSYS_FILES,
+                       sandbox::TargetPolicy::FILES_ALLOW_ANY, logFileNameWild);
+    } else {
+      mPolicy->AddRule(sandbox::TargetPolicy::SUBSYS_FILES,
+                       sandbox::TargetPolicy::FILES_ALLOW_ANY, logFileName);
+    }
+  }
+
+  logFileName = _wgetenv(L"NSPR_LOG_FILE");
+  if (logFileName) {
+    mPolicy->AddRule(sandbox::TargetPolicy::SUBSYS_FILES,
+                     sandbox::TargetPolicy::FILES_ALLOW_ANY, logFileName);
+  }
 
   // Ceate the sandboxed process
   PROCESS_INFORMATION targetInfo = {0};
@@ -220,6 +253,19 @@ SandboxBroker::SetSecurityLevelForContentProcess(int32_t aSandboxLevel,
   result = mPolicy->AddRule(sandbox::TargetPolicy::SUBSYS_HANDLES,
                             sandbox::TargetPolicy::HANDLES_DUP_ANY,
                             L"Section");
+  MOZ_RELEASE_ASSERT(sandbox::SBOX_ALL_OK == result,
+                     "With these static arguments AddRule should never fail, what happened?");
+
+  // The content process needs to be able to duplicate semaphore handles,
+  // to the broker process and other child processes.
+  result = mPolicy->AddRule(sandbox::TargetPolicy::SUBSYS_HANDLES,
+                            sandbox::TargetPolicy::HANDLES_DUP_BROKER,
+                            L"Semaphore");
+  MOZ_RELEASE_ASSERT(sandbox::SBOX_ALL_OK == result,
+                     "With these static arguments AddRule should never fail, what happened?");
+  result = mPolicy->AddRule(sandbox::TargetPolicy::SUBSYS_HANDLES,
+                            sandbox::TargetPolicy::HANDLES_DUP_ANY,
+                            L"Semaphore");
   MOZ_RELEASE_ASSERT(sandbox::SBOX_ALL_OK == result,
                      "With these static arguments AddRule should never fail, what happened?");
 }

@@ -1742,11 +1742,11 @@ private:
 
     void FlushStroke(gfx::GlyphBuffer& aBuf, const Pattern& aPattern)
     {
-        RefPtr<Path> path =
-            mFontParams.scaledFont->GetPathForGlyphs(aBuf, mRunParams.dt);
-        mRunParams.dt->Stroke(path, aPattern, *mRunParams.strokeOpts,
-                              (mRunParams.drawOpts) ? *mRunParams.drawOpts
-                                                    : DrawOptions());
+        mRunParams.dt->StrokeGlyphs(mFontParams.scaledFont, aBuf,
+                                    aPattern,
+                                    *mRunParams.strokeOpts,
+                                    mFontParams.drawOptions,
+                                    mFontParams.renderingOptions);
     }
 
     Glyph        mGlyphBuffer[GLYPH_BUFFER_SIZE];
@@ -2073,15 +2073,15 @@ gfxFont::Draw(const gfxTextRun *aTextRun, uint32_t aStart, uint32_t aEnd,
         aRunParams.context->SetMatrix(mat);
     }
 
-    UniquePtr<SVGContextPaint> contextPaint;
+    RefPtr<SVGContextPaint> contextPaint;
     if (fontParams.haveSVGGlyphs && !fontParams.contextPaint) {
         // If no pattern is specified for fill, use the current pattern
         NS_ASSERTION((int(aRunParams.drawMode) & int(DrawMode::GLYPH_STROKE)) == 0,
                      "no pattern supplied for stroking text");
         RefPtr<gfxPattern> fillPattern = aRunParams.context->GetPattern();
-        contextPaint.reset(
+        contextPaint =
             new SimpleTextContextPaint(fillPattern, nullptr,
-                                       aRunParams.context->CurrentMatrix()));
+                                       aRunParams.context->CurrentMatrix());
         fontParams.contextPaint = contextPaint.get();
     }
 
@@ -3642,7 +3642,7 @@ gfxFont::SanitizeMetrics(gfxFont::Metrics *aMetrics, bool aIsBadUnderlineFont)
 // usual font tables (which can happen in the case of a legacy bitmap or Type1
 // font for which the platform-specific backend used platform APIs instead of
 // sfnt tables to create the horizontal metrics).
-const gfxFont::Metrics*
+UniquePtr<const gfxFont::Metrics>
 gfxFont::CreateVerticalMetrics()
 {
     const uint32_t kHheaTableTag = TRUETYPE_TAG('h','h','e','a');
@@ -3651,8 +3651,8 @@ gfxFont::CreateVerticalMetrics()
     const uint32_t kOS_2TableTag = TRUETYPE_TAG('O','S','/','2');
     uint32_t len;
 
-    Metrics* metrics = new Metrics;
-    ::memset(metrics, 0, sizeof(Metrics));
+    UniquePtr<Metrics> metrics = MakeUnique<Metrics>();
+    ::memset(metrics.get(), 0, sizeof(Metrics));
 
     // Some basic defaults, in case the font lacks any real metrics tables.
     // TODO: consider what rounding (if any) we should apply to these.
@@ -3797,7 +3797,7 @@ gfxFont::CreateVerticalMetrics()
     metrics->xHeight = metrics->emHeight / 2;
     metrics->capHeight = metrics->maxAscent;
 
-    return metrics;
+    return Move(metrics);
 }
 
 gfxFloat
@@ -3848,8 +3848,8 @@ void
 gfxFont::AddGlyphChangeObserver(GlyphChangeObserver *aObserver)
 {
     if (!mGlyphChangeObservers) {
-        mGlyphChangeObservers.reset(
-            new nsTHashtable<nsPtrHashKey<GlyphChangeObserver>>);
+        mGlyphChangeObservers =
+            MakeUnique<nsTHashtable<nsPtrHashKey<GlyphChangeObserver>>>();
     }
     mGlyphChangeObservers->PutEntry(aObserver);
 }
@@ -3862,28 +3862,7 @@ gfxFont::RemoveGlyphChangeObserver(GlyphChangeObserver *aObserver)
     mGlyphChangeObservers->RemoveEntry(aObserver);
 }
 
-
 #define DEFAULT_PIXEL_FONT_SIZE 16.0f
-
-/*static*/ uint32_t
-gfxFontStyle::ParseFontLanguageOverride(const nsString& aLangTag)
-{
-  if (!aLangTag.Length() || aLangTag.Length() > 4) {
-    return NO_FONT_LANGUAGE_OVERRIDE;
-  }
-  uint32_t index, result = 0;
-  for (index = 0; index < aLangTag.Length(); ++index) {
-    char16_t ch = aLangTag[index];
-    if (!nsCRT::IsAscii(ch)) { // valid tags are pure ASCII
-      return NO_FONT_LANGUAGE_OVERRIDE;
-    }
-    result = (result << 8) + ch;
-  }
-  while (index++ < 4) {
-    result = (result << 8) + 0x20;
-  }
-  return result;
-}
 
 gfxFontStyle::gfxFontStyle() :
     language(nsGkAtoms::x_western),
@@ -3907,10 +3886,10 @@ gfxFontStyle::gfxFontStyle(uint8_t aStyle, uint16_t aWeight, int16_t aStretch,
                            bool aPrinterFont,
                            bool aAllowWeightSynthesis,
                            bool aAllowStyleSynthesis,
-                           const nsString& aLanguageOverride):
+                           uint32_t aLanguageOverride):
     language(aLanguage),
     size(aSize), sizeAdjust(aSizeAdjust), baselineOffset(0.0f),
-    languageOverride(ParseFontLanguageOverride(aLanguageOverride)),
+    languageOverride(aLanguageOverride),
     weight(aWeight), stretch(aStretch),
     style(aStyle),
     variantCaps(NS_FONT_VARIANT_CAPS_NORMAL),

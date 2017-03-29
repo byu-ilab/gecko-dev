@@ -263,6 +263,7 @@ class RecursiveMakeTraversal(object):
 
     def __init__(self):
         self._traversal = {}
+        self._attached = set()
 
     def add(self, dir, dirs=[], tests=[]):
         """
@@ -273,7 +274,10 @@ class RecursiveMakeTraversal(object):
         subdirs = self._traversal.setdefault(dir, self.SubDirectories())
         for key, value in (('dirs', dirs), ('tests', tests)):
             assert(key in self.SubDirectoryCategories)
+            # Callers give us generators
+            value = list(value)
             getattr(subdirs, key).extend(value)
+            self._attached |= set(value)
 
     @staticmethod
     def default_filter(current, subdirs):
@@ -287,8 +291,7 @@ class RecursiveMakeTraversal(object):
         Helper function to call a filter from compute_dependencies and
         traverse.
         """
-        return filter(current, self._traversal.get(current,
-            self.SubDirectories()))
+        return filter(current, self.get_subdirs(current))
 
     def compute_dependencies(self, filter=None):
         """
@@ -357,7 +360,16 @@ class RecursiveMakeTraversal(object):
         """
         Returns all direct subdirectories under the given directory.
         """
-        return self._traversal.get(dir, self.SubDirectories())
+        result = self._traversal.get(dir, self.SubDirectories())
+        if dir == '':
+            unattached = set(self._traversal) - self._attached - set([''])
+            if unattached:
+                new_result = self.SubDirectories()
+                new_result.dirs.extend(result.dirs)
+                new_result.dirs.extend(sorted(unattached))
+                new_result.tests.extend(result.tests)
+                result = new_result
+        return result
 
 
 class RecursiveMakeBackend(CommonBackend):
@@ -405,6 +417,7 @@ class RecursiveMakeBackend(CommonBackend):
             'libs': set(),
             'misc': set(),
             'tools': set(),
+            'check': set(),
         }
 
     def summary(self):
@@ -431,14 +444,11 @@ class RecursiveMakeBackend(CommonBackend):
 
         consumed = CommonBackend.consume_object(self, obj)
 
-        # CommonBackend handles XPIDLFile and TestManifest, but we want to do
+        # CommonBackend handles XPIDLFile, but we want to do
         # some extra things for them.
         if isinstance(obj, XPIDLFile):
             backend_file.xpt_name = '%s.xpt' % obj.module
             self._idl_dirs.add(obj.relobjdir)
-
-        elif isinstance(obj, TestManifest):
-            self._process_test_manifest(obj, backend_file)
 
         # If CommonBackend acknowledged the object, we're done with it.
         if consumed:
@@ -645,6 +655,9 @@ class RecursiveMakeBackend(CommonBackend):
         elif isinstance(obj, ChromeManifestEntry):
             self._process_chrome_manifest_entry(obj, backend_file)
 
+        elif isinstance(obj, TestManifest):
+            self._process_test_manifest(obj, backend_file)
+
         else:
             return False
 
@@ -694,6 +707,7 @@ class RecursiveMakeBackend(CommonBackend):
             ('libs', libs_filter),
             ('misc', parallel_filter),
             ('tools', tools_filter),
+            ('check', parallel_filter),
         ]
 
         root_deps_mk = Makefile()
@@ -836,9 +850,9 @@ class RecursiveMakeBackend(CommonBackend):
                 self._create_makefile(obj, stub=stub)
                 with open(obj.output_path) as fh:
                     content = fh.read()
-                    # Skip every directory but those with a Makefile
-                    # containing a tools target, or XPI_PKGNAME or
-                    # INSTALL_EXTENSION_ID.
+                    # Directories with a Makefile containing a tools target, or
+                    # XPI_PKGNAME or INSTALL_EXTENSION_ID can't be skipped and
+                    # must run during the 'tools' tier.
                     for t in (b'XPI_PKGNAME', b'INSTALL_EXTENSION_ID',
                             b'tools'):
                         if t not in content:
@@ -848,6 +862,12 @@ class RecursiveMakeBackend(CommonBackend):
                         if objdir == self.environment.topobjdir:
                             continue
                         self._no_skip['tools'].add(mozpath.relpath(objdir,
+                            self.environment.topobjdir))
+
+                    # Directories with a Makefile containing a check target
+                    # can't be skipped and must run during the 'check' tier.
+                    if re.search('(?:^|\s)check.*::', content, re.M):
+                        self._no_skip['check'].add(mozpath.relpath(objdir,
                             self.environment.topobjdir))
 
                     # Detect any Makefile.ins that contain variables on the
@@ -1057,6 +1077,7 @@ class RecursiveMakeBackend(CommonBackend):
                                    target_variable,
                                    target_cargo_variable):
         backend_file.write_once('CARGO_FILE := %s\n' % obj.cargo_file)
+        backend_file.write_once('CARGO_TARGET_DIR := .\n')
         backend_file.write('%s += %s\n' % (target_variable, obj.location))
         backend_file.write('%s += %s\n' % (target_cargo_variable, obj.name))
 
@@ -1230,6 +1251,13 @@ class RecursiveMakeBackend(CommonBackend):
             feature_var = 'HOST_RUST_LIBRARY_FEATURES'
         backend_file.write_once('%s := %s\n' % (libdef.LIB_FILE_VAR, libdef.import_name))
         backend_file.write('CARGO_FILE := $(srcdir)/Cargo.toml\n')
+        # Need to normalize the path so Cargo sees the same paths from all
+        # possible invocations of Cargo with this CARGO_TARGET_DIR.  Otherwise,
+        # Cargo's dependency calculations don't work as we expect and we wind
+        # up recompiling lots of things.
+        target_dir = mozpath.join(backend_file.objdir, libdef.target_dir)
+        target_dir = mozpath.normpath(target_dir)
+        backend_file.write('CARGO_TARGET_DIR := %s\n' % target_dir)
         if libdef.features:
             backend_file.write('%s := %s\n' % (libdef.FEATURES_VAR, ' '.join(libdef.features)))
 

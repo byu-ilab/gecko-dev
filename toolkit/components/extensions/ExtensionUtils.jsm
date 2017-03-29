@@ -22,6 +22,10 @@ XPCOMUtils.defineLazyModuleGetter(this, "AppConstants",
                                   "resource://gre/modules/AppConstants.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ConsoleAPI",
                                   "resource://gre/modules/Console.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "ExtensionManagement",
+                                  "resource://gre/modules/ExtensionManagement.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "IndexedDB",
+                                  "resource://gre/modules/IndexedDB.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "LanguageDetector",
                                   "resource:///modules/translation/LanguageDetector.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Locale",
@@ -39,6 +43,8 @@ XPCOMUtils.defineLazyServiceGetter(this, "styleSheetService",
                                    "@mozilla.org/content/style-sheet-service;1",
                                    "nsIStyleSheetService");
 
+/* globals IDBKeyRange */
+
 function getConsole() {
   return new ConsoleAPI({
     maxLogLevelPref: "extensions.webextensions.log.level",
@@ -49,10 +55,155 @@ function getConsole() {
 XPCOMUtils.defineLazyGetter(this, "console", getConsole);
 
 let nextId = 0;
-const {uniqueProcessID} = Services.appinfo;
+XPCOMUtils.defineLazyGetter(this, "uniqueProcessID", () => Services.appinfo.uniqueProcessID);
 
 function getUniqueId() {
   return `${nextId++}-${uniqueProcessID}`;
+}
+
+// The list of properties that themes are allowed to contain.
+XPCOMUtils.defineLazyGetter(this, "gAllowedThemeProperties", () => {
+  Cu.import("resource://gre/modules/ExtensionParent.jsm");
+  let propertiesInBaseManifest = ExtensionParent.baseManifestProperties;
+
+  // The properties found in the base manifest contain all of the properties that
+  // themes are allowed to have. However, the list also contains several properties
+  // that aren't allowed, so we need to filter them out first before the list can
+  // be used to validate themes.
+  return propertiesInBaseManifest.filter(prop => {
+    const propertiesToRemove = ["background", "content_scripts", "permissions"];
+    return !propertiesToRemove.includes(prop);
+  });
+});
+
+/**
+ * Validates a theme to ensure it only contains static resources.
+ *
+ * @param {Array<string>} manifestProperties The list of top-level keys found in the
+ *    the extension's manifest.
+ * @returns {Array<string>} A list of invalid properties or an empty list
+ *    if none are found.
+ */
+function validateThemeManifest(manifestProperties) {
+  let invalidProps = [];
+  for (let propName of manifestProperties) {
+    if (propName != "theme" && !gAllowedThemeProperties.includes(propName)) {
+      invalidProps.push(propName);
+    }
+  }
+  return invalidProps;
+}
+
+let StartupCache = {
+  DB_NAME: "ExtensionStartupCache",
+
+  SCHEMA_VERSION: 1,
+
+  STORE_NAMES: Object.freeze(["locales", "manifests", "schemas"]),
+
+  dbPromise: null,
+
+  cacheInvalidated: 0,
+
+  initDB(db) {
+    for (let name of StartupCache.STORE_NAMES) {
+      try {
+        db.deleteObjectStore(name);
+      } catch (e) {
+        // Don't worry if the store doesn't already exist.
+      }
+      db.createObjectStore(name);
+    }
+  },
+
+  clearAddonData(id) {
+    let range = IDBKeyRange.bound([id], [id, "\uFFFF"]);
+
+    return Promise.all([
+      this.locales.delete(range),
+      this.manifests.delete(range),
+    ]).catch(e => {
+      // Ignore the error. It happens when we try to flush the add-on
+      // data after the AddonManager has flushed the entire startup cache.
+    });
+  },
+
+  async reallyOpen(invalidate = false) {
+    if (this.dbPromise) {
+      let db = await this.dbPromise;
+      db.close();
+    }
+
+    if (invalidate) {
+      this.cacheInvalidated = ExtensionManagement.cacheInvalidated;
+
+      if (Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_DEFAULT) {
+        IndexedDB.deleteDatabase(this.DB_NAME, {storage: "persistent"});
+      }
+    }
+
+    return IndexedDB.open(this.DB_NAME,
+                          {storage: "persistent", version: this.SCHEMA_VERSION},
+                          db => this.initDB(db));
+  },
+
+  async open() {
+    if (ExtensionManagement.cacheInvalidated > this.cacheInvalidated) {
+      this.dbPromise = this.reallyOpen(true);
+    } else if (!this.dbPromise) {
+      this.dbPromise = this.reallyOpen();
+    }
+
+    return this.dbPromise;
+  },
+
+  observe(subject, topic, data) {
+    if (topic === "startupcache-invalidate") {
+      this.dbPromise = this.reallyOpen(true).catch(e => {});
+    }
+  },
+};
+
+Services.obs.addObserver(StartupCache, "startupcache-invalidate", false);
+
+class CacheStore {
+  constructor(storeName) {
+    this.storeName = storeName;
+  }
+
+  async get(key, createFunc) {
+    let db;
+    let value;
+    try {
+      db = await StartupCache.open();
+
+      value = await db.objectStore(this.storeName)
+                      .get(key);
+    } catch (e) {
+      Cu.reportError(e);
+
+      return createFunc(key);
+    }
+
+    if (value === undefined) {
+      value = await createFunc(key);
+
+      db.objectStore(this.storeName, "readwrite")
+        .put(value, key);
+    }
+
+    return value;
+  }
+
+  async delete(key) {
+    let db = await StartupCache.open();
+
+    return db.objectStore(this.storeName, "readwrite").delete(key);
+  }
+}
+
+for (let name of StartupCache.STORE_NAMES) {
+  StartupCache[name] = new CacheStore(name);
 }
 
 /**
@@ -120,12 +271,6 @@ function runSafe(context, f, ...args) {
   return runSafeWithoutClone(f, ...args);
 }
 
-function getInnerWindowID(window) {
-  return window.QueryInterface(Ci.nsIInterfaceRequestor)
-    .getInterface(Ci.nsIDOMWindowUtils)
-    .currentInnerWindowID;
-}
-
 // Return true if the given value is an instance of the given
 // native type.
 function instanceOf(value, type) {
@@ -177,6 +322,16 @@ class DefaultMap extends Map {
     }
     return super.get(key);
   }
+}
+
+const _winUtils = new DefaultWeakMap(win => {
+  return win.QueryInterface(Ci.nsIInterfaceRequestor)
+            .getInterface(Ci.nsIDOMWindowUtils);
+});
+const getWinUtils = win => _winUtils.get(win);
+
+function getInnerWindowID(window) {
+  return getWinUtils(window).currentInnerWindowID;
 }
 
 class SpreadArgs extends Array {
@@ -316,6 +471,13 @@ let IconDetails = {
       image.onerror = reject;
       image.src = imageURL;
     });
+  },
+
+  // These URLs should already be properly escaped, but make doubly sure CSS
+  // string escape characters are escaped here, since they could lead to a
+  // sandbox break.
+  escapeUrl(url) {
+    return url.replace(/[\\\s"]/g, encodeURIComponent);
   },
 };
 
@@ -664,7 +826,11 @@ SingletonEventManager.prototype = {
 
     let unregister = this.unregister.get(callback);
     this.unregister.delete(callback);
-    unregister();
+    try {
+      unregister();
+    } catch (e) {
+      Cu.reportError(e);
+    }
     if (this.unregister.size == 0) {
       this.context.forgetOnClose(this);
     }
@@ -674,10 +840,14 @@ SingletonEventManager.prototype = {
     return this.unregister.has(callback);
   },
 
-  close() {
-    for (let unregister of this.unregister.values()) {
-      unregister();
+  revoke() {
+    for (let callback of this.unregister.keys()) {
+      this.removeListener(callback);
     }
+  },
+
+  close() {
+    this.revoke();
   },
 
   api() {
@@ -685,6 +855,7 @@ SingletonEventManager.prototype = {
       addListener: (...args) => this.addListener(...args),
       removeListener: (...args) => this.removeListener(...args),
       hasListener: (...args) => this.hasListener(...args),
+      [Schemas.REVOKE]: () => this.revoke(),
     };
   },
 };
@@ -862,25 +1033,27 @@ function flushJarCache(jarPath) {
   Services.obs.notifyObservers(null, "flush-cache-entry", jarPath);
 }
 
-const PlatformInfo = Object.freeze({
-  os: (function() {
-    let os = AppConstants.platform;
-    if (os == "macosx") {
-      os = "mac";
-    }
-    return os;
-  })(),
-  arch: (function() {
-    let abi = Services.appinfo.XPCOMABI;
-    let [arch] = abi.split("-");
-    if (arch == "x86") {
-      arch = "x86-32";
-    } else if (arch == "x86_64") {
-      arch = "x86-64";
-    }
-    return arch;
-  })(),
-});
+function PlatformInfo() {
+  return Object.freeze({
+    os: (function() {
+      let os = AppConstants.platform;
+      if (os == "macosx") {
+        os = "mac";
+      }
+      return os;
+    })(),
+    arch: (function() {
+      let abi = Services.appinfo.XPCOMABI;
+      let [arch] = abi.split("-");
+      if (arch == "x86") {
+        arch = "x86-32";
+      } else if (arch == "x86_64") {
+        arch = "x86-64";
+      }
+      return arch;
+    })(),
+  });
+}
 
 function detectLanguage(text) {
   return LanguageDetector.detectLanguage(text).then(result => ({
@@ -1165,6 +1338,8 @@ this.ExtensionUtils = {
   getInnerWindowID,
   getMessageManager,
   getUniqueId,
+  filterStack,
+  getWinUtils,
   ignoreEvent,
   injectAPI,
   instanceOf,
@@ -1178,6 +1353,7 @@ this.ExtensionUtils = {
   runSafeSyncWithoutClone,
   runSafeWithoutClone,
   stylesheetMap,
+  validateThemeManifest,
   DefaultMap,
   DefaultWeakMap,
   EventEmitter,
@@ -1186,7 +1362,9 @@ this.ExtensionUtils = {
   LimitedSet,
   LocaleData,
   MessageManagerProxy,
-  PlatformInfo,
   SingletonEventManager,
   SpreadArgs,
+  StartupCache,
 };
+
+XPCOMUtils.defineLazyGetter(this.ExtensionUtils, "PlatformInfo", PlatformInfo);

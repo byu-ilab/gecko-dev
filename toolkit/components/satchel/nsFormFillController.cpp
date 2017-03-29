@@ -6,6 +6,7 @@
 
 #include "nsFormFillController.h"
 
+#include "mozilla/ErrorResult.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Event.h" // for nsIDOMEvent::InternalDOMEvent()
 #include "mozilla/dom/HTMLInputElement.h"
@@ -24,7 +25,6 @@
 #include "nsIDOMKeyEvent.h"
 #include "nsIDOMDocument.h"
 #include "nsIDOMElement.h"
-#include "nsIFormControl.h"
 #include "nsIDocument.h"
 #include "nsIContent.h"
 #include "nsIPresShell.h"
@@ -41,8 +41,11 @@
 #include "nsIFrame.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsFocusManager.h"
+#include "nsThreadUtils.h"
 
+using namespace mozilla;
 using namespace mozilla::dom;
+using mozilla::ErrorResult;
 
 NS_IMPL_CYCLE_COLLECTION(nsFormFillController,
                          mController, mLoginManager, mFocusedPopup, mDocShells,
@@ -67,10 +70,14 @@ nsFormFillController::nsFormFillController() :
   mFocusedInput(nullptr),
   mFocusedInputNode(nullptr),
   mListNode(nullptr),
+  // The amount of time a context menu event supresses showing a
+  // popup from a focus event in ms. This matches the threshold in
+  // toolkit/components/passwordmgr/LoginManagerContent.jsm.
+  mFocusAfterContextMenuThreshold(400),
   mTimeout(50),
   mMinResultsForPopup(1),
   mMaxRows(0),
-  mContextMenuFiredBeforeFocus(false),
+  mLastContextMenuEventTimeStamp(TimeStamp()),
   mDisableAutoComplete(false),
   mCompleteDefaultIndex(false),
   mCompleteSelectedIndex(false),
@@ -291,7 +298,6 @@ nsFormFillController::MarkAsLoginManagerField(nsIDOMHTMLInputElement *aInput)
       if (!mFocusedInput) {
         MaybeStartControllingInput(input);
       }
-      ShowPopup();
     }
   }
 
@@ -310,18 +316,30 @@ nsFormFillController::MarkAsAutofillField(nsIDOMHTMLInputElement *aInput)
    */
   nsCOMPtr<nsINode> node = do_QueryInterface(aInput);
   NS_ENSURE_STATE(node);
+
+  if (mAutofillInputs.Get(node)) {
+    return NS_OK;
+  }
+
   mAutofillInputs.Put(node, true);
   node->AddMutationObserverUnlessExists(this);
+
+  nsFocusManager *fm = nsFocusManager::GetFocusManager();
+  if (fm) {
+    nsCOMPtr<nsIContent> focusedContent = fm->GetFocusedContent();
+    if (SameCOMIdentity(focusedContent, node)) {
+      nsCOMPtr<nsIDOMHTMLInputElement> input = do_QueryInterface(node);
+      MaybeStartControllingInput(input);
+    }
+  }
 
   return NS_OK;
 }
 
 NS_IMETHODIMP
-nsFormFillController::GetFocusedInput(nsIDOMHTMLInputElement** aRetVal) {
-  if (!aRetVal) {
-    return NS_ERROR_INVALID_POINTER;
-  }
-  *aRetVal = mFocusedInput;
+nsFormFillController::GetFocusedInput(nsIDOMHTMLInputElement **aInput) {
+  *aInput = mFocusedInput;
+  NS_IF_ADDREF(*aInput);
   return NS_OK;
 }
 
@@ -586,25 +604,40 @@ nsFormFillController::SetTextValueWithReason(const nsAString & aTextValue,
 NS_IMETHODIMP
 nsFormFillController::GetSelectionStart(int32_t *aSelectionStart)
 {
-  if (mFocusedInput)
-    mFocusedInput->GetSelectionStart(aSelectionStart);
-  return NS_OK;
+  nsCOMPtr<nsIContent> content = do_QueryInterface(mFocusedInput);
+  if (!content) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  ErrorResult rv;
+  *aSelectionStart =
+    HTMLInputElement::FromContent(content)->GetSelectionStartIgnoringType(rv);
+  return rv.StealNSResult();
 }
 
 NS_IMETHODIMP
 nsFormFillController::GetSelectionEnd(int32_t *aSelectionEnd)
 {
-  if (mFocusedInput)
-    mFocusedInput->GetSelectionEnd(aSelectionEnd);
-  return NS_OK;
+  nsCOMPtr<nsIContent> content = do_QueryInterface(mFocusedInput);
+  if (!content) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  ErrorResult rv;
+  *aSelectionEnd =
+    HTMLInputElement::FromContent(content)->GetSelectionEndIgnoringType(rv);
+  return rv.StealNSResult();
 }
 
 NS_IMETHODIMP
 nsFormFillController::SelectTextRange(int32_t aStartIndex, int32_t aEndIndex)
 {
- if (mFocusedInput)
-    mFocusedInput->SetSelectionRange(aStartIndex, aEndIndex, EmptyString());
-  return NS_OK;
+  nsCOMPtr<nsIContent> content = do_QueryInterface(mFocusedInput);
+    if (!content) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  ErrorResult rv;
+  HTMLInputElement::FromContent(content)->
+    SetSelectionRange(aStartIndex, aEndIndex, Optional<nsAString>(), rv);
+  return rv.StealNSResult();
 }
 
 NS_IMETHODIMP
@@ -706,6 +739,7 @@ nsFormFillController::StartSearch(const nsAString &aSearchString, const nsAStrin
 
   // If the login manager has indicated it's responsible for this field, let it
   // handle the autocomplete. Otherwise, handle with form history.
+  // This method is sometimes called in unit tests and from XUL without a focused node.
   if (mFocusedInputNode && (mPwmgrInputs.Get(mFocusedInputNode) ||
                             formControl->GetType() == NS_FORM_INPUT_PASSWORD)) {
 
@@ -713,6 +747,10 @@ nsFormFillController::StartSearch(const nsAString &aSearchString, const nsAStrin
     // MarkAsLoginManagerField wasn't called because password manager is disabled.
     if (!mLoginManager) {
       mLoginManager = do_GetService("@mozilla.org/login-manager;1");
+    }
+
+    if (NS_WARN_IF(!mLoginManager)) {
+      return NS_ERROR_FAILURE;
     }
 
     // XXX aPreviousResult shouldn't ever be a historyResult type, since we're not letting
@@ -918,7 +956,9 @@ nsFormFillController::HandleEvent(nsIDOMEvent* aEvent)
     return NS_OK;
   }
   if (type.EqualsLiteral("contextmenu")) {
-    mContextMenuFiredBeforeFocus = true;
+    // Set timestamp to check for a recent contextmenu
+    // call in Focus(), to avoid showing the popup.
+    mLastContextMenuEventTimeStamp = TimeStamp::Now();
     if (mFocusedPopup)
       mFocusedPopup->ClosePopup();
     return NS_OK;
@@ -992,11 +1032,40 @@ nsFormFillController::MaybeStartControllingInput(nsIDOMHTMLInputElement* aInput)
   bool hasList = datalist != nullptr;
 
   bool isPwmgrInput = false;
-  if (mPwmgrInputs.Get(inputNode))
-      isPwmgrInput = true;
+  if (mPwmgrInputs.Get(inputNode) ||
+      formControl->GetType() == NS_FORM_INPUT_PASSWORD) {
+    isPwmgrInput = true;
+  }
 
   if (isPwmgrInput || hasList || autocomplete) {
     StartControllingInput(aInput);
+  }
+}
+
+void
+nsFormFillController::FocusEventDelayedCallback(nsIFormControl* aFormControl)
+{
+  nsCOMPtr<nsIFormControl> formControl = do_QueryInterface(mFocusedInputNode);
+
+  if (!formControl || formControl != aFormControl ||
+      formControl->GetType() != NS_FORM_INPUT_PASSWORD) {
+    return;
+  }
+
+  // If we have not seen a context menu call yet, just show the popup.
+  if (mLastContextMenuEventTimeStamp.IsNull()) {
+   ShowPopup();
+   return;
+  }
+
+  uint64_t timeDiff = fabs((TimeStamp::Now() - mLastContextMenuEventTimeStamp).ToMilliseconds());
+  // If this focus doesn't follow a contextmenu event within our specified
+  // threshold then show the autocomplete popup for all password fields.
+  // This is done to avoid showing both the context menu and the popup
+  // at the same time. The threshold should be a low amount of time that
+  // makes it impossible for the user to accidentally trigger this condition.
+  if (timeDiff > mFocusAfterContextMenuThreshold) {
+   ShowPopup();
   }
 }
 
@@ -1009,25 +1078,17 @@ nsFormFillController::Focus(nsIDOMEvent* aEvent)
 
   // Bail if we didn't start controlling the input.
   if (!mFocusedInputNode) {
-    mContextMenuFiredBeforeFocus = false;
     return NS_OK;
   }
 
+#ifndef ANDROID
   nsCOMPtr<nsIFormControl> formControl = do_QueryInterface(mFocusedInputNode);
   MOZ_ASSERT(formControl);
 
-  // If this focus doesn't immediately follow a contextmenu event then show
-  // the autocomplete popup
-  if (!mContextMenuFiredBeforeFocus &&
-      (mPwmgrInputs.Get(mFocusedInputNode)
-#ifndef ANDROID
-       || formControl->GetType() == NS_FORM_INPUT_PASSWORD
+  NS_DispatchToMainThread(NewRunnableMethod<nsCOMPtr<nsIFormControl>>(
+      this, &nsFormFillController::FocusEventDelayedCallback, formControl));
 #endif
-       )) {
-    ShowPopup();
-  }
 
-  mContextMenuFiredBeforeFocus = false;
   return NS_OK;
 }
 
@@ -1163,7 +1224,7 @@ nsFormFillController::MouseDown(nsIDOMEvent* aEvent)
   return ShowPopup();
 }
 
-nsresult
+NS_IMETHODIMP
 nsFormFillController::ShowPopup()
 {
   bool isOpen = false;

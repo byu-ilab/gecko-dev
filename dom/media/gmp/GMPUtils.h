@@ -7,9 +7,13 @@
 #define GMPUtils_h_
 
 #include "mozilla/UniquePtr.h"
+#include "mozilla/RefPtr.h"
+#include "mozilla/AbstractThread.h"
 #include "nsTArray.h"
 #include "nsCOMPtr.h"
 #include "nsClassHashtable.h"
+
+#define CHROMIUM_CDM_API "chromium-cdm8-host4"
 
 class nsIFile;
 class nsCString;
@@ -77,6 +81,12 @@ ReadIntoString(nsIFile* aFile,
 bool
 HaveGMPFor(const nsCString& aAPI,
            nsTArray<nsCString>&& aTags);
+
+void
+LogToConsole(const nsAString& aMsg);
+
+RefPtr<AbstractThread>
+GetGMPAbstractThread();
 
 } // namespace mozilla
 

@@ -46,6 +46,9 @@ web-platform-tests:
 external-media-tests:
     - external-media-tests-base
     - external-media-tests-youtube
+
+external-media-tests-slow:
+    # twitch tests are too slow and stall under debug, give them their own special set
     - external-media-tests-twitch
 
 opt-only-tests:
@@ -62,6 +65,9 @@ talos:
     - talos-svgr
     - talos-tp5o
 
+awsy:
+    - awsy
+
 ##
 # Limited test sets for specific platforms
 
@@ -70,19 +76,50 @@ stylo-tests:
     - crashtest
     - reftest-stylo
     - mochitest-style
+    - mochitest-chrome-style
+
+qr-tests:
+    - cppunit
+    - crashtest
+    - gtest
+    - jittest
+    - jsreftest
+    - mochitest-a11y
+    - mochitest-gpu
+    - mochitest-webgl
+    - reftest
+    - reftest-no-accel
+    - xpcshell
 
 ccov-code-coverage-tests:
+    - cppunit
     - crashtest
+    - firefox-ui-functional-local
+    - firefox-ui-functional-remote
+    - gtest
+    - jittest
     - jsreftest
+    - marionette
     - mochitest
+    - mochitest-a11y
     - mochitest-browser-chrome
+    - mochitest-chrome
+    - mochitest-clipboard
     - mochitest-devtools-chrome
+    - mochitest-gpu
+    - mochitest-jetpack
+    - mochitest-media
+    - mochitest-webgl
     - reftest
+    - reftest-no-accel
+    - web-platform-tests
     - xpcshell
 
 jsdcov-code-coverage-tests:
+    - mochitest
     - mochitest-browser-chrome
     - mochitest-devtools-chrome
+    - xpcshell
 
 ##
 # Test sets still being greened up in various ways
@@ -109,31 +146,34 @@ windows-vm-tests:
 #    - mochitest-webgl
 
 # these tests currently run on hardware, but may migrate above when validated
-# note: on win, mochitest-a11y and mochitest-chrome come under mochitest-other
-# windows-hw-tests:
+#    - mochitest-a11y
+#    - mochitest-chrome
 #    - mochitest-clipboard
 #    - mochitest-gpu
-#    - mochitest-other
 
 macosx64-tests-debug:
     - cppunit
     - crashtest
-    # - gtest
+    - external-media-tests-base
+    - external-media-tests-youtube
+    - gtest
+    - jittest
     - jsreftest
-    # - marionette
-    # - mochitest
-    # - mochitest-browser-chrome
-    # - mochitest-clipboard
-    # - mochitest-devtools-chrome
-    # - mochitest-gpu
-    # - mochitest-jetpack
-    # - mochitest-media
-    # - mochitest-other
+    - marionette
+    - mochitest
+    - mochitest-a11y
+    - mochitest-browser-chrome
+    - mochitest-chrome
+    - mochitest-clipboard
+    - mochitest-devtools-chrome
+    - mochitest-gpu
+    - mochitest-jetpack
+    - mochitest-media
     - mochitest-webgl
-    # - reftest
-    # - web-platform-tests
-    # - web-platform-tests-reftests
-    # - xpcshell
+    - reftest
+    - web-platform-tests
+    - web-platform-tests-reftests
+    - xpcshell
 
 macosx64-tests-talos:
     - talos-chrome

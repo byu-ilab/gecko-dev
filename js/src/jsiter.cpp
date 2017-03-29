@@ -32,7 +32,7 @@
 #include "vm/Interpreter.h"
 #include "vm/Shape.h"
 #include "vm/StopIterationObject.h"
-#include "vm/TypedArrayCommon.h"
+#include "vm/TypedArrayObject.h"
 
 #include "jsscriptinlines.h"
 
@@ -472,7 +472,8 @@ size_t sCustomIteratorCount = 0;
 static inline bool
 GetCustomIterator(JSContext* cx, HandleObject obj, unsigned flags, MutableHandleObject objp)
 {
-    JS_CHECK_RECURSION(cx, return false);
+    if (!CheckRecursionLimit(cx))
+        return false;
 
     RootedValue rval(cx);
     /* Check whether we have a valid __iterator__ method. */
@@ -552,9 +553,9 @@ NewPropertyIteratorObject(JSContext* cx, unsigned flags)
             return nullptr;
 
         JSObject* obj;
-        JS_TRY_VAR_OR_RETURN_NULL(cx, obj, JSObject::create(cx, ITERATOR_FINALIZE_KIND,
-                                                            GetInitialHeap(GenericObject, clasp),
-                                                            shape, group));
+        JS_TRY_VAR_OR_RETURN_NULL(cx, obj, NativeObject::create(cx, ITERATOR_FINALIZE_KIND,
+                                                                GetInitialHeap(GenericObject, clasp),
+                                                                shape, group));
 
         PropertyIteratorObject* res = &obj->as<PropertyIteratorObject>();
 
@@ -1408,6 +1409,9 @@ public:
 bool
 js::SuppressDeletedProperty(JSContext* cx, HandleObject obj, jsid id)
 {
+    if (MOZ_LIKELY(!cx->compartment()->objectMaybeInIteration(obj)))
+        return true;
+
     if (JSID_IS_SYMBOL(id))
         return true;
 
@@ -1420,10 +1424,17 @@ js::SuppressDeletedProperty(JSContext* cx, HandleObject obj, jsid id)
 bool
 js::SuppressDeletedElement(JSContext* cx, HandleObject obj, uint32_t index)
 {
+    if (MOZ_LIKELY(!cx->compartment()->objectMaybeInIteration(obj)))
+        return true;
+
     RootedId id(cx);
     if (!IndexToId(cx, index, &id))
         return false;
-    return SuppressDeletedProperty(cx, obj, id);
+
+    Rooted<JSFlatString*> str(cx, IdToString(cx, id));
+    if (!str)
+        return false;
+    return SuppressDeletedPropertyHelper(cx, obj, SingleStringPredicate(str));
 }
 
 bool
@@ -1442,7 +1453,8 @@ js::IteratorMore(JSContext* cx, HandleObject iterobj, MutableHandleValue rval)
     }
 
     // We're reentering below and can call anything.
-    JS_CHECK_RECURSION(cx, return false);
+    if (!CheckRecursionLimit(cx))
+        return false;
 
     // Call the iterator object's .next method.
     if (!GetProperty(cx, iterobj, iterobj, cx->names().next, rval))

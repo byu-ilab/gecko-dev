@@ -21,7 +21,7 @@ import tempfile
 import time
 import traceback
 
-from collections import deque, namedtuple
+from collections import defaultdict, deque, namedtuple
 from distutils import dir_util
 from multiprocessing import cpu_count
 from argparse import ArgumentParser
@@ -986,43 +986,55 @@ class XPCShellTests(object):
         """
           Run node for HTTP/2 tests, if available, and updates mozinfo as appropriate.
         """
-        nodeBin = None
+        if os.getenv('MOZ_ASSUME_NODE_RUNNING', None):
+            self.log.info('Assuming required node servers are already running')
+            if not os.getenv('MOZHTTP2_PORT', None):
+                self.log.warning('MOZHTTP2_PORT environment variable not set. Tests requiring http/2 will fail.')
+            return
 
         # We try to find the node executable in the path given to us by the user in
         # the MOZ_NODE_PATH environment variable
-        localPath = os.getenv('MOZ_NODE_PATH', None)
-        if localPath and os.path.exists(localPath) and os.path.isfile(localPath):
-            nodeBin = localPath
+        nodeBin = os.getenv('MOZ_NODE_PATH', None)
+        if not nodeBin:
+            self.log.warning('MOZ_NODE_PATH environment variable not set. Tests requiring http/2 will fail.')
+            return
 
-        if os.getenv('MOZ_ASSUME_NODE_RUNNING', None):
-            self.log.info('Assuming required node servers are already running')
-        elif nodeBin:
-            self.log.info('Found node at %s' % (nodeBin,))
+        if not os.path.exists(nodeBin) or not os.path.isfile(nodeBin):
+            error = 'node not found at MOZ_NODE_PATH %s' % (nodeBin)
+            self.log.error(error)
+            raise IOError(error)
 
-            def startServer(name, serverJs):
-                if os.path.exists(serverJs):
-                    # OK, we found our server, let's try to get it running
-                    self.log.info('Found %s at %s' % (name, serverJs))
-                    try:
-                        # We pipe stdin to node because the server will exit when its
-                        # stdin reaches EOF
-                        process = Popen([nodeBin, serverJs], stdin=PIPE, stdout=PIPE,
-                                stderr=PIPE, env=self.env, cwd=os.getcwd())
-                        self.nodeProc[name] = process
+        self.log.info('Found node at %s' % (nodeBin,))
 
-                        # Check to make sure the server starts properly by waiting for it to
-                        # tell us it's started
-                        msg = process.stdout.readline()
-                        if 'server listening' in msg:
-                            searchObj = re.search( r'HTTP2 server listening on port (.*)', msg, 0)
-                            if searchObj:
-                              self.env["MOZHTTP2_PORT"] = searchObj.group(1)
-                    except OSError, e:
-                        # This occurs if the subprocess couldn't be started
-                        self.log.error('Could not run %s server: %s' % (name, str(e)))
+        def startServer(name, serverJs):
+            if not os.path.exists(serverJs):
+                error = '%s not found at %s' % (name, serverJs)
+                self.log.error(error)
+                raise IOError(error)
 
-            myDir = os.path.split(os.path.abspath(__file__))[0]
-            startServer('moz-http2', os.path.join(myDir, 'moz-http2', 'moz-http2.js'))
+            # OK, we found our server, let's try to get it running
+            self.log.info('Found %s at %s' % (name, serverJs))
+            try:
+                # We pipe stdin to node because the server will exit when its
+                # stdin reaches EOF
+                process = Popen([nodeBin, serverJs], stdin=PIPE, stdout=PIPE,
+                        stderr=PIPE, env=self.env, cwd=os.getcwd())
+                self.nodeProc[name] = process
+
+                # Check to make sure the server starts properly by waiting for it to
+                # tell us it's started
+                msg = process.stdout.readline()
+                if 'server listening' in msg:
+                    searchObj = re.search( r'HTTP2 server listening on port (.*)', msg, 0)
+                    if searchObj:
+                      self.env["MOZHTTP2_PORT"] = searchObj.group(1)
+            except OSError, e:
+                # This occurs if the subprocess couldn't be started
+                self.log.error('Could not run %s server: %s' % (name, str(e)))
+                raise
+
+        myDir = os.path.split(os.path.abspath(__file__))[0]
+        startServer('moz-http2', os.path.join(myDir, 'moz-http2', 'moz-http2.js'))
 
     def shutdownNode(self):
         """
@@ -1080,7 +1092,8 @@ class XPCShellTests(object):
                  testClass=XPCShellTestThread, failureManifest=None,
                  log=None, stream=None, jsDebugger=False, jsDebuggerPort=0,
                  test_tags=None, dump_tests=None, utility_path=None,
-                 rerun_failures=False, failure_manifest=None, jscovdir=None, **otherOptions):
+                 rerun_failures=False, threadCount=NUM_THREADS,
+                 failure_manifest=None, jscovdir=None, **otherOptions):
         """Run xpcshell tests.
 
         |xpcshell|, is the xpcshell executable to use to run the tests.
@@ -1181,6 +1194,7 @@ class XPCShellTests(object):
         self.pluginsPath = pluginsPath
         self.sequential = sequential
         self.failure_manifest = failure_manifest
+        self.threadCount = threadCount or NUM_THREADS
         self.jscovdir = jscovdir
 
         self.testCount = 0
@@ -1213,6 +1227,10 @@ class XPCShellTests(object):
 
         mozinfo.update(self.mozInfo)
 
+        # Add a flag to mozinfo to indicate that code coverage is enabled.
+        if self.jscovdir:
+            mozinfo.update({"coverage": True})
+
         self.stack_fixer_function = None
         if self.utility_path and os.path.exists(self.utility_path):
             self.stack_fixer_function = get_stack_fixer_function(self.utility_path, self.symbolsPath)
@@ -1228,8 +1246,8 @@ class XPCShellTests(object):
         if "appname" in self.mozInfo:
             appDirKey = self.mozInfo["appname"] + "-appdir"
 
-        # We have to do this before we build the test list so we know whether or
-        # not to run tests that depend on having the node http/2 server
+        # We have to do this before we run tests that depend on having the node
+        # http/2 server.
         self.trySetupNode()
 
         pStdout, pStderr = self.getPipes()
@@ -1331,15 +1349,19 @@ class XPCShellTests(object):
         if self.sequential:
             self.log.info("Running tests sequentially.")
         else:
-            self.log.info("Using at most %d threads." % NUM_THREADS)
+            self.log.info("Using at most %d threads." % self.threadCount)
 
-        # keep a set of NUM_THREADS running tests and start running the
-        # tests in the queue at most NUM_THREADS at a time
+        # keep a set of threadCount running tests and start running the
+        # tests in the queue at most threadCount at a time
         running_tests = set()
         keep_going = True
         exceptions = []
         tracebacks = []
-        self.log.suite_start([t['id'] for t in self.alltests])
+
+        tests_by_manifest = defaultdict(list)
+        for test in self.alltests:
+            tests_by_manifest[test['manifest']].append(test['id'])
+        self.log.suite_start(tests_by_manifest)
 
         while tests_queue or running_tests:
             # if we're not supposed to continue and all of the running tests
@@ -1348,7 +1370,7 @@ class XPCShellTests(object):
                 break
 
             # if there's room to run more tests, start running them
-            while keep_going and tests_queue and (len(running_tests) < NUM_THREADS):
+            while keep_going and tests_queue and (len(running_tests) < self.threadCount):
                 test = tests_queue.popleft()
                 running_tests.add(test)
                 test.start()

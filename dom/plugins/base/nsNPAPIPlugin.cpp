@@ -210,8 +210,6 @@ static void CheckClassInitialized()
   NPN_PLUGIN_LOG(PLUGIN_LOG_NORMAL,("NPN callbacks initialized\n"));
 }
 
-NS_IMPL_ISUPPORTS0(nsNPAPIPlugin)
-
 nsNPAPIPlugin::nsNPAPIPlugin()
 {
   memset((void*)&mPluginFuncs, 0, sizeof(mPluginFuncs));
@@ -1370,14 +1368,23 @@ _evaluate(NPP npp, NPObject* npobj, NPString *script, NPVariant *result)
   options.setFileAndLine(spec, 0)
          .setVersion(JSVERSION_DEFAULT);
   JS::Rooted<JS::Value> rval(cx);
-  nsJSUtils::EvaluateOptions evalOptions(cx);
+  JS::AutoObjectVector scopeChain(cx);
   if (obj != js::GetGlobalForObjectCrossCompartment(obj) &&
-      !evalOptions.scopeChain.append(obj)) {
+      !scopeChain.append(obj)) {
     return false;
   }
   obj = js::GetGlobalForObjectCrossCompartment(obj);
-  nsresult rv = nsJSUtils::EvaluateString(cx, utf16script, obj, options,
-                                          evalOptions, &rval);
+  nsresult rv = NS_OK;
+  {
+    nsJSUtils::ExecutionContext exec(cx, obj);
+    exec.SetScopeChain(scopeChain);
+    exec.CompileAndExec(options, utf16script);
+    rv = exec.ExtractReturnValue(&rval);
+  }
+
+  if (!JS_WrapValue(cx, &rval)) {
+    return false;
+  }
 
   return NS_SUCCEEDED(rv) &&
          (!result || JSValToNPVariant(npp, cx, rval, result));
@@ -2274,9 +2281,7 @@ _setvalue(NPP npp, NPPVariable variable, void *result)
         inst->SetDrawingModel((NPDrawingModel)NS_PTR_TO_INT32(result));
         return NPERR_NO_ERROR;
       }
-      else {
-        return NPERR_GENERIC_ERROR;
-      }
+      return NPERR_GENERIC_ERROR;
     }
 #endif
 
@@ -2463,15 +2468,10 @@ _getvalueforurl(NPP instance, NPNURLVariable variable, const char *url,
 
   switch (variable) {
   case NPNURLVProxy:
-    {
-      nsCOMPtr<nsIPluginHost> pluginHostCOM(do_GetService(MOZ_PLUGIN_HOST_CONTRACTID));
-      nsPluginHost *pluginHost = static_cast<nsPluginHost*>(pluginHostCOM.get());
-      if (pluginHost && NS_SUCCEEDED(pluginHost->FindProxyForURL(url, value))) {
-        *len = *value ? strlen(*value) : 0;
-        return NPERR_NO_ERROR;
-      }
-      break;
-    }
+    // NPNURLVProxy is no longer supported.
+    *value = nullptr;
+    return NPERR_GENERIC_ERROR;
+
   case NPNURLVCookie:
     // NPNURLVCookie is no longer supported.
     *value = nullptr;

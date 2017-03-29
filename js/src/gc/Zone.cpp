@@ -37,11 +37,9 @@ JS::Zone::Zone(JSRuntime* rt, ZoneGroup* group)
     gcWeakRefs_(group),
     weakCaches_(group),
     gcWeakKeys_(group, SystemAllocPolicy(), rt->randomHashCodeScrambler()),
-    gcZoneGroupEdges_(group),
+    gcSweepGroupEdges_(group),
+    hasDeadProxies_(group),
     typeDescrObjects_(group, this, SystemAllocPolicy()),
-    gcMallocBytes(0),
-    gcMaxMallocBytes(0),
-    gcMallocGCTriggered(false),
     markedAtoms_(group),
     usage(&rt->gc.usage),
     threshold(),
@@ -51,9 +49,8 @@ JS::Zone::Zone(JSRuntime* rt, ZoneGroup* group)
     initialShapes_(group, this, InitialShapeSet()),
     data(group, nullptr),
     isSystem(group, false),
-    usedByExclusiveThread(false),
 #ifdef DEBUG
-    gcLastZoneGroupIndex(group, 0),
+    gcLastSweepGroupIndex(group, 0),
 #endif
     jitZone_(group, nullptr),
     gcState_(NoGC),
@@ -70,6 +67,7 @@ JS::Zone::Zone(JSRuntime* rt, ZoneGroup* group)
     AutoLockGC lock(rt);
     threshold.updateAfterGC(8192, GC_NORMAL, rt->gc.tunables, rt->gc.schedulingState, lock);
     setGCMaxMallocBytes(rt->gc.maxMallocBytesAllocated() * 0.9);
+    jitCodeCounter.setMax(jit::MaxCodeBytesPerProcess * 0.8);
 }
 
 Zone::~Zone()
@@ -92,9 +90,10 @@ bool Zone::init(bool isSystemArg)
 {
     isSystem = isSystemArg;
     return uniqueIds().init() &&
-           gcZoneGroupEdges().init() &&
+           gcSweepGroupEdges().init() &&
            gcWeakKeys().init() &&
-           typeDescrObjects().init();
+           typeDescrObjects().init() &&
+           markedAtoms().init();
 }
 
 void
@@ -105,36 +104,10 @@ Zone::setNeedsIncrementalBarrier(bool needs, ShouldUpdateJit updateJit)
         jitUsingBarriers_ = needs;
     }
 
-    MOZ_ASSERT_IF(needs && isAtomsZone(), !runtimeFromMainThread()->exclusiveThreadsPresent());
+    MOZ_ASSERT_IF(needs && isAtomsZone(),
+                  !runtimeFromActiveCooperatingThread()->hasHelperThreadZones());
     MOZ_ASSERT_IF(needs, canCollect());
     needsIncrementalBarrier_ = needs;
-}
-
-void
-Zone::resetGCMallocBytes()
-{
-    gcMallocBytes = ptrdiff_t(gcMaxMallocBytes);
-    gcMallocGCTriggered = false;
-}
-
-void
-Zone::setGCMaxMallocBytes(size_t value)
-{
-    /*
-     * For compatibility treat any value that exceeds PTRDIFF_T_MAX to
-     * mean that value.
-     */
-    gcMaxMallocBytes = (ptrdiff_t(value) >= 0) ? value : size_t(-1) >> 1;
-    resetGCMallocBytes();
-}
-
-void
-Zone::onTooMuchMalloc()
-{
-    if (!gcMallocGCTriggered) {
-        GCRuntime& gc = runtimeFromAnyThread()->gc;
-        gcMallocGCTriggered = gc.triggerZoneGC(this, JS::gcreason::TOO_MUCH_MALLOC);
-    }
 }
 
 void
@@ -186,8 +159,8 @@ Zone::sweepBreakpoints(FreeOp* fop)
                 GCPtrNativeObject& dbgobj = bp->debugger->toJSObjectRef();
 
                 // If we are sweeping, then we expect the script and the
-                // debugger object to be swept in the same zone group, except if
-                // the breakpoint was added after we computed the zone
+                // debugger object to be swept in the same sweep group, except
+                // if the breakpoint was added after we computed the sweep
                 // groups. In this case both script and debugger object must be
                 // live.
                 MOZ_ASSERT_IF(isGCSweeping() && dbgobj->zone()->isCollecting(),
@@ -268,14 +241,14 @@ Zone::discardJitCode(FreeOp* fop, bool discardBaselineCode)
          * Defer freeing any allocated blocks until after the next minor GC.
          */
         if (discardBaselineCode) {
-            jitZone()->optimizedStubSpace()->freeAllAfterMinorGC(fop->runtime());
+            jitZone()->optimizedStubSpace()->freeAllAfterMinorGC(this);
             jitZone()->purgeIonCacheIRStubInfo();
         }
 
         /*
          * Free all control flow graphs that are cached on BaselineScripts.
-         * Assuming this happens on the mainthread and all control flow
-         * graph reads happen on the mainthread, this is save.
+         * Assuming this happens on the active thread and all control flow
+         * graph reads happen on the active thread, this is safe.
          */
         jitZone()->cfgSpace()->lifoAlloc().freeAll();
     }
@@ -295,7 +268,7 @@ Zone::gcNumber()
 {
     // Zones in use by exclusive threads are not collected, and threads using
     // them cannot access the main runtime's gcNumber without racing.
-    return usedByExclusiveThread ? 0 : runtimeFromMainThread()->gc.gcNumber();
+    return usedByHelperThread() ? 0 : runtimeFromActiveCooperatingThread()->gc.gcNumber();
 }
 
 js::jit::JitZone*
@@ -324,10 +297,10 @@ bool
 Zone::canCollect()
 {
     // Zones cannot be collected while in use by other threads.
-    if (usedByExclusiveThread)
+    if (usedByHelperThread())
         return false;
     JSRuntime* rt = runtimeFromAnyThread();
-    if (isAtomsZone() && rt->exclusiveThreadsPresent())
+    if (isAtomsZone() && rt->hasHelperThreadZones())
         return false;
     return true;
 }
@@ -337,7 +310,7 @@ Zone::notifyObservingDebuggers()
 {
     for (CompartmentsInZoneIter comps(this); !comps.done(); comps.next()) {
         JSRuntime* rt = runtimeFromAnyThread();
-        RootedGlobalObject global(rt->contextFromMainThread(), comps->unsafeUnbarrieredMaybeGlobal());
+        RootedGlobalObject global(TlsContext.get(), comps->unsafeUnbarrieredMaybeGlobal());
         if (!global)
             continue;
 
@@ -356,12 +329,6 @@ Zone::notifyObservingDebuggers()
             }
         }
     }
-}
-
-bool
-js::ZonesIter::atAtomsZone(JSRuntime* rt)
-{
-    return rt->isAtomsZone(*it);
 }
 
 bool

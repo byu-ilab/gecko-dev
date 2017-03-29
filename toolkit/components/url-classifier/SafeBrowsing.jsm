@@ -12,12 +12,7 @@ Cu.import("resource://gre/modules/Services.jsm");
 
 // Log only if browser.safebrowsing.debug is true
 function log(...stuff) {
-  let logging = null;
-  try {
-    logging = Services.prefs.getBoolPref("browser.safebrowsing.debug");
-  } catch(e) {
-    return;
-  }
+  let logging = Services.prefs.getBoolPref("browser.safebrowsing.debug", false);
   if (!logging) {
     return;
   }
@@ -29,18 +24,14 @@ function log(...stuff) {
 
 function getLists(prefName) {
   log("getLists: " + prefName);
-  let pref = null;
-  try {
-    pref = Services.prefs.getCharPref(prefName);
-  } catch(e) {
-    return null;
-  }
+  let pref = Services.prefs.getCharPref(prefName, "");
+
   // Splitting an empty string returns [''], we really want an empty array.
   if (!pref) {
     return [];
   }
-  return pref.split(",")
-    .map(function(value) { return value.trim(); });
+
+  return pref.split(",").map(value => value.trim());
 }
 
 const tablePreferences = [
@@ -70,6 +61,7 @@ this.SafeBrowsing = {
     Services.prefs.addObserver("browser.safebrowsing", this, false);
     Services.prefs.addObserver("privacy.trackingprotection", this, false);
     Services.prefs.addObserver("urlclassifier", this, false);
+    Services.prefs.addObserver("plugins.flashBlock.enabled", this, false);
 
     this.readPrefs();
     this.addMozEntries();
@@ -145,17 +137,16 @@ this.SafeBrowsing = {
 
   reportURL:             null,
 
-  getReportURL: function(kind, URI) {
+  getReportURL: function(kind, info) {
     let pref;
     switch (kind) {
       case "Phish":
         pref = "browser.safebrowsing.reportPhishURL";
         break;
+
       case "PhishMistake":
-        pref = "browser.safebrowsing.reportPhishMistakeURL";
-        break;
       case "MalwareMistake":
-        pref = "browser.safebrowsing.reportMalwareMistakeURL";
+        pref = "browser.safebrowsing.provider." + info.provider + ".report" + kind + "URL";
         break;
 
       default:
@@ -163,16 +154,22 @@ this.SafeBrowsing = {
         Components.utils.reportError(err);
         throw err;
     }
+
+    // The "Phish" reports are about submitting new phishing URLs to Google so
+    // they don't have an associated list URL
+    if (kind != "Phish" && (!info.list || !info.uri)) {
+      return null;
+    }
+
     let reportUrl = Services.urlFormatter.formatURLPref(pref);
+    // formatURLPref might return "about:blank" if getting the pref fails
+    if (reportUrl == "about:blank") {
+      reportUrl = null;
+    }
 
-    let pageUri = URI.clone();
-
-    // Remove the query to avoid including potentially sensitive data
-    if (pageUri instanceof Ci.nsIURL)
-      pageUri.query = '';
-
-    reportUrl += encodeURIComponent(pageUri.asciiSpec);
-
+    if (reportUrl) {
+      reportUrl += encodeURIComponent(info.uri);
+    }
     return reportUrl;
   },
 
@@ -374,6 +371,13 @@ this.SafeBrowsing = {
     const whitelistURL  = "itisatrap.org/?resource=itisatracker.org";
     const blockedURL    = "itisatrap.org/firefox/blocked.html";
 
+    const flashDenyURL = "flashblock.itisatrap.org/";
+    const flashDenyExceptURL = "except.flashblock.itisatrap.org/";
+    const flashAllowURL = "flashallow.itisatrap.org/";
+    const flashAllowExceptURL = "except.flashallow.itisatrap.org/";
+    const flashSubDocURL = "flashsubdoc.itisatrap.org/";
+    const flashSubDocExceptURL = "except.flashsubdoc.itisatrap.org/";
+
     let update = "n:1000\ni:test-malware-simple\nad:1\n" +
                  "a:1:32:" + malwareURL.length + "\n" +
                  malwareURL + "\n";
@@ -395,6 +399,24 @@ this.SafeBrowsing = {
     update += "n:1000\ni:test-block-simple\nad:1\n" +
               "a:1:32:" + blockedURL.length + "\n" +
               blockedURL;
+    update += "n:1000\ni:test-flash-simple\nad:1\n" +
+              "a:1:32:" + flashDenyURL.length + "\n" +
+              flashDenyURL;
+    update += "n:1000\ni:testexcept-flash-simple\nad:1\n" +
+              "a:1:32:" + flashDenyExceptURL.length + "\n" +
+              flashDenyExceptURL;
+    update += "n:1000\ni:test-flashallow-simple\nad:1\n" +
+              "a:1:32:" + flashAllowURL.length + "\n" +
+              flashAllowURL;
+    update += "n:1000\ni:testexcept-flashallow-simple\nad:1\n" +
+              "a:1:32:" + flashAllowExceptURL.length + "\n" +
+              flashAllowExceptURL;
+    update += "n:1000\ni:test-flashsubdoc-simple\nad:1\n" +
+              "a:1:32:" + flashSubDocURL.length + "\n" +
+              flashSubDocURL;
+    update += "n:1000\ni:testexcept-flashsubdoc-simple\nad:1\n" +
+              "a:1:32:" + flashSubDocExceptURL.length + "\n" +
+              flashSubDocExceptURL;
     log("addMozEntries:", update);
 
     let db = Cc["@mozilla.org/url-classifier/dbservice;1"].
@@ -415,7 +437,7 @@ this.SafeBrowsing = {
     };
 
     try {
-      let tables = "test-malware-simple,test-phish-simple,test-unwanted-simple,test-track-simple,test-trackwhite-simple,test-block-simple";
+      let tables = "test-malware-simple,test-phish-simple,test-unwanted-simple,test-track-simple,test-trackwhite-simple,test-block-simple,test-flash-simple,testexcept-flash-simple,test-flashallow-simple,testexcept-flashallow-simple,test-flashsubdoc-simple,testexcept-flashsubdoc-simple";
       db.beginUpdate(dummyListener, tables, "");
       db.beginStream("", "");
       db.updateStream(update);

@@ -73,7 +73,6 @@ android-x86-nightly/opt:
         secrets: true
         custom-build-variant-cfg: x86
         tooltool-downloads: internal
-    run-on-projects: []
 
 android-api-15/opt:
     description: "Android 4.0 API15+ Opt"
@@ -126,7 +125,6 @@ android-api-15-nightly/opt:
         secrets: true
         custom-build-variant-cfg: api-15
         tooltool-downloads: internal
-    run-on-projects: [ ]
 
 android-api-15-gradle/opt:
     description: "Android 4.0 API15+ (Gradle) Opt"
@@ -134,7 +132,7 @@ android-api-15-gradle/opt:
         product: mobile
         job-name: android-api-15-gradle-opt
     treeherder:
-        platform: android-4-0-armv7-api15/opt
+        platform: android-api-15-gradle/opt
         symbol: tc(Bg)
         tier: 2
     worker-type: aws-provisioner-v1/gecko-{level}-b-android

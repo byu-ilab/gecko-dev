@@ -3208,14 +3208,10 @@ Checker.prototype = {
   getUpdateURL: function UC_getUpdateURL(force) {
     this._forced = force;
 
-    let url;
-    try {
-      url = Services.prefs.getDefaultBranch(null).
-            getCharPref(PREF_APP_UPDATE_URL);
-    } catch (e) {
-    }
+    let url = Services.prefs.getDefaultBranch(null).
+              getCharPref(PREF_APP_UPDATE_URL, "");
 
-    if (!url || url == "") {
+    if (!url) {
       LOG("Checker:getUpdateURL - update URL not defined");
       return null;
     }
@@ -4000,7 +3996,8 @@ Downloader.prototype = {
     maxFail = Math.min(maxFail, 20);
     LOG("Downloader:onStopRequest - status: " + status + ", " +
         "current fail: " + this.updateService._consecutiveSocketErrors + ", " +
-        "max fail: " + maxFail + ", " + "retryTimeout: " + retryTimeout);
+        "max fail: " + maxFail + ", " +
+        "retryTimeout: " + retryTimeout);
     if (Components.isSuccessCode(status)) {
       if (this._verifyDownload()) {
         if (shouldUseService()) {

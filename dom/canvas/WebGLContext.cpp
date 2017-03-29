@@ -32,6 +32,7 @@
 #include "mozilla/ProcessPriorityManager.h"
 #include "mozilla/ScopeExit.h"
 #include "mozilla/Services.h"
+#include "mozilla/SizePrintfMacros.h"
 #include "mozilla/Telemetry.h"
 #include "nsContentUtils.h"
 #include "nsDisplayList.h"
@@ -709,8 +710,25 @@ bool
 WebGLContext::CreateAndInitGL(bool forceEnabled,
                               std::vector<FailureReason>* const out_failReasons)
 {
+    // WebGL2 is separately blocked:
+    if (IsWebGL2()) {
+        const nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
+        const auto feature = nsIGfxInfo::FEATURE_WEBGL2;
+
+        FailureReason reason;
+        if (IsFeatureInBlacklist(gfxInfo, feature, &reason.key)) {
+            reason.info = "Refused to create WebGL2 context because of blacklist"
+                          " entry: ";
+            reason.info.Append(reason.key);
+            out_failReasons->push_back(reason);
+            GenerateWarning("%s", reason.info.BeginReading());
+            return false;
+        }
+    }
+
     const gl::SurfaceCaps baseCaps = BaseCaps(mOptions, this);
-    gl::CreateContextFlags flags = gl::CreateContextFlags::NO_VALIDATION;
+    gl::CreateContextFlags flags = (gl::CreateContextFlags::NO_VALIDATION |
+                                    gl::CreateContextFlags::PREFER_ROBUSTNESS);
     bool tryNativeGL = true;
     bool tryANGLE = false;
 
@@ -754,7 +772,7 @@ WebGLContext::CreateAndInitGL(bool forceEnabled,
 
             out_failReasons->push_back(reason);
 
-            GenerateWarning(reason.info.BeginReading());
+            GenerateWarning("%s", reason.info.BeginReading());
             tryNativeGL = false;
         }
     }
@@ -1211,13 +1229,13 @@ WebGLContext::LoseOldestWebGLContextIfLimitExceeded()
     }
 
     if (numContextsThisPrincipal > kMaxWebGLContextsPerPrincipal) {
-        GenerateWarning("Exceeded %d live WebGL contexts for this principal, losing the "
+        GenerateWarning("Exceeded %" PRIuSIZE " live WebGL contexts for this principal, losing the "
                         "least recently used one.", kMaxWebGLContextsPerPrincipal);
         MOZ_ASSERT(oldestContextThisPrincipal); // if we reach this point, this can't be null
         const_cast<WebGLContext*>(oldestContextThisPrincipal)->LoseContext();
     } else if (numContexts > kMaxWebGLContexts) {
-        GenerateWarning("Exceeded %d live WebGL contexts, losing the least recently used one.",
-                        kMaxWebGLContexts);
+        GenerateWarning("Exceeded %" PRIuSIZE " live WebGL contexts, losing the least "
+                        "recently used one.", kMaxWebGLContexts);
         MOZ_ASSERT(oldestContext); // if we reach this point, this can't be null
         const_cast<WebGLContext*>(oldestContext)->LoseContext();
     }
@@ -2347,7 +2365,9 @@ WebGLContext::StartVRPresentation()
             vrmc->GetBackendType(),
             TextureFlags::ORIGIN_BOTTOM_LEFT);
 
-    screen->Morph(Move(factory));
+    if (factory) {
+        screen->Morph(Move(factory));
+    }
     return true;
 }
 

@@ -59,19 +59,14 @@ nsSHEntry::nsSHEntry(const nsSHEntry& aOther)
 {
 }
 
-static bool
-ClearParentPtr(nsISHEntry* aEntry, void* /* aData */)
-{
-  if (aEntry) {
-    aEntry->SetParent(nullptr);
-  }
-  return true;
-}
-
 nsSHEntry::~nsSHEntry()
 {
   // Null out the mParent pointers on all our kids.
-  mChildren.EnumerateForwards(ClearParentPtr, nullptr);
+  for (nsISHEntry* entry : mChildren) {
+    if (entry) {
+      entry->SetParent(nullptr);
+    }
+  }
 }
 
 NS_IMPL_ISUPPORTS(nsSHEntry, nsISHContainer, nsISHEntry, nsISHEntryInternal)
@@ -518,10 +513,6 @@ nsSHEntry::GetTriggeringPrincipal(nsIPrincipal** aTriggeringPrincipal)
 NS_IMETHODIMP
 nsSHEntry::SetTriggeringPrincipal(nsIPrincipal* aTriggeringPrincipal)
 {
-  MOZ_ASSERT(aTriggeringPrincipal, "need a valid triggeringPrincipal");
-  if (!aTriggeringPrincipal) {
-    return NS_ERROR_FAILURE;
-  }
   mShared->mTriggeringPrincipal = aTriggeringPrincipal;
   return NS_OK;
 }

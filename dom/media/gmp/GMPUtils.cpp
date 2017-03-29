@@ -12,6 +12,10 @@
 #include "nsCRTGlue.h"
 #include "mozilla/Base64.h"
 #include "nsISimpleEnumerator.h"
+#include "prio.h"
+#include "nsIConsoleService.h"
+#include "mozIGeckoMediaPluginService.h"
+#include "GMPService.h"
 
 namespace mozilla {
 
@@ -214,5 +218,25 @@ HaveGMPFor(const nsCString& aAPI,
   return hasPlugin;
 }
 
+void
+LogToConsole(const nsAString& aMsg)
+{
+  nsCOMPtr<nsIConsoleService> console(
+    do_GetService("@mozilla.org/consoleservice;1"));
+  if (!console) {
+    NS_WARNING("Failed to log message to console.");
+    return;
+  }
+  nsAutoString msg(aMsg);
+  console->LogStringMessage(msg.get());
+}
+
+RefPtr<AbstractThread>
+GetGMPAbstractThread()
+{
+  RefPtr<gmp::GeckoMediaPluginService> service =
+    gmp::GeckoMediaPluginService::GetGeckoMediaPluginService();
+  return service ? service->GetAbstractGMPThread() : nullptr;
+}
 
 } // namespace mozilla

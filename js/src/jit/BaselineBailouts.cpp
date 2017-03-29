@@ -137,6 +137,8 @@ struct BaselineStackBuilder
         header_->resumeFramePtr = nullptr;
         header_->resumeAddr = nullptr;
         header_->resumePC = nullptr;
+        header_->tryPC = nullptr;
+        header_->faultPC = nullptr;
         header_->monitorStub = nullptr;
         header_->numFrames = 0;
         header_->checkGlobalDeclarationConflicts = false;
@@ -509,16 +511,10 @@ HasLiveStackValueAtDepth(JSScript* script, jsbytecode* pc, uint32_t stackDepth)
             break;
 
           case JSTRY_FOR_OF:
-            // For-of loops have both the iterator and the result object on
-            // stack. The iterator is below the result object.
-            if (stackDepth == tn->stackDepth - 1)
-                return true;
-            break;
-
-          case JSTRY_ITERCLOSE:
-            // Code that need to call IteratorClose have the iterator on the
-            // stack.
-            if (stackDepth == tn->stackDepth)
+            // For-of loops have the iterator, the result object, and the value
+            // of the result object on stack. The iterator is below the result
+            // object and the value.
+            if (stackDepth == tn->stackDepth - 2)
                 return true;
             break;
 
@@ -729,19 +725,32 @@ InitFromBailout(JSContext* cx, HandleScript caller, jsbytecode* callerPC,
         Value v = iter.read();
         if (v.isObject()) {
             envChain = &v.toObject();
-            if (fun &&
-                ((fun->needsCallObject() && envChain->is<CallObject>()) ||
-                 (fun->needsNamedLambdaEnvironment() &&
-                  !fun->needsCallObject() &&
-                  envChain->is<LexicalEnvironmentObject>() &&
-                  &envChain->as<LexicalEnvironmentObject>().scope() ==
-                  script->maybeNamedLambdaScope())))
-            {
+
+            // If Ion has updated env slot from UndefinedValue, it will be the
+            // complete initial environment, so we can set the HAS_INITIAL_ENV
+            // flag if needed.
+            if (fun && fun->needsFunctionEnvironmentObjects()) {
+                MOZ_ASSERT(fun->nonLazyScript()->initialEnvironmentShape());
                 MOZ_ASSERT(!fun->needsExtraBodyVarEnvironment());
                 flags |= BaselineFrame::HAS_INITIAL_ENV;
             }
         } else {
             MOZ_ASSERT(v.isUndefined() || v.isMagic(JS_OPTIMIZED_OUT));
+
+#ifdef DEBUG
+            // The |envChain| slot must not be optimized out if the currently
+            // active scope requires any EnvironmentObjects beyond what is
+            // available at body scope. This checks that scope chain does not
+            // require any such EnvironmentObjects.
+            // See also: |CompileInfo::isObservableFrameSlot|
+            jsbytecode* pc = script->offsetToPC(iter.pcOffset());
+            Scope* scopeIter = script->innermostScope(pc);
+            while (scopeIter != script->bodyScope()) {
+                MOZ_ASSERT(scopeIter);
+                MOZ_ASSERT(!scopeIter->hasEnvironment());
+                scopeIter = scopeIter->enclosing();
+            }
+#endif
 
             // Get env chain from function or script.
             if (fun) {
@@ -1481,7 +1490,7 @@ jit::BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIter
     MOZ_ASSERT(bailoutInfo != nullptr);
     MOZ_ASSERT(*bailoutInfo == nullptr);
 
-    TraceLoggerThread* logger = TraceLoggerForMainThread(cx->runtime());
+    TraceLoggerThread* logger = TraceLoggerForCurrentThread(cx);
     TraceLogStopEvent(logger, TraceLogger_IonMonkey);
     TraceLogStartEvent(logger, TraceLogger_Baseline);
 
@@ -1606,7 +1615,7 @@ jit::BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIter
             // TraceLogger doesn't create entries for inlined frames. But we
             // see them in Baseline. Here we create the start events of those
             // entries. So they correspond to what we will see in Baseline.
-            TraceLoggerEvent scriptEvent(logger, TraceLogger_Scripts, scr);
+            TraceLoggerEvent scriptEvent(TraceLogger_Scripts, scr);
             TraceLogStartEvent(logger, scriptEvent);
             TraceLogStartEvent(logger, TraceLogger_Baseline);
         }
@@ -1667,7 +1676,8 @@ jit::BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIter
     if (Simulator::Current()->overRecursed(uintptr_t(newsp)))
         overRecursed = true;
 #else
-    JS_CHECK_RECURSION_WITH_SP_DONT_REPORT(cx, newsp, overRecursed = true);
+    if (!CheckRecursionLimitWithStackPointerDontReport(cx, newsp))
+        overRecursed = true;
 #endif
     if (overRecursed) {
         JitSpew(JitSpew_BaselineBailouts, "  Overrecursion check failed!");
@@ -1822,6 +1832,8 @@ jit::FinishBailoutToBaseline(BaselineBailoutInfo* bailoutInfo)
     BaselineFrame* topFrame = GetTopBaselineFrame(cx);
     topFrame->setOverridePc(bailoutInfo->resumePC);
 
+    jsbytecode* faultPC = bailoutInfo->faultPC;
+    jsbytecode* tryPC = bailoutInfo->tryPC;
     uint32_t numFrames = bailoutInfo->numFrames;
     MOZ_ASSERT(numFrames > 0);
     BailoutKind bailoutKind = bailoutInfo->bailoutKind;
@@ -1937,6 +1949,13 @@ jit::FinishBailoutToBaseline(BaselineBailoutInfo* bailoutInfo)
 
         if (!ok)
             return false;
+    }
+
+    // If we are catching an exception, we need to unwind scopes.
+    // See |SettleOnTryNote|
+    if (cx->isExceptionPending() && faultPC) {
+        EnvironmentIter ei(cx, topFrame, faultPC);
+        UnwindEnvironment(cx, ei, tryPC);
     }
 
     JitSpew(JitSpew_BaselineBailouts,

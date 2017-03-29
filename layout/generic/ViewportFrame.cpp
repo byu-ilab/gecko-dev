@@ -39,6 +39,8 @@ ViewportFrame::Init(nsIContent*       aContent,
                     nsIFrame*         aPrevInFlow)
 {
   nsContainerFrame::Init(aContent, aParent, aPrevInFlow);
+  // No need to call CreateView() here - the frame ctor will call SetView()
+  // with the ViewManager's root view, so we'll assign it in SetViewInternal().
 
   nsIFrame* parent = nsLayoutUtils::GetCrossDocParentFrame(this);
   if (parent) {
@@ -290,7 +292,7 @@ ViewportFrame::Reflow(nsPresContext*           aPresContext,
   NS_FRAME_TRACE_REFLOW_IN("ViewportFrame::Reflow");
 
   // Initialize OUT parameters
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
 
   // Because |Reflow| sets ComputedBSize() on the child to our
   // ComputedBSize().

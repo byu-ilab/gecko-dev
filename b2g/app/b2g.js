@@ -324,7 +324,6 @@ pref("media.gonk.enabled", true);
 
 //Encrypted media extensions.
 pref("media.eme.enabled", true);
-pref("media.eme.apiVisible", true);
 // The default number of decoded video frames that are enqueued in
 // MediaDecoderReader's mVideoQueue.
 pref("media.video-queue.default-size", 3);
@@ -889,9 +888,6 @@ pref("layout.accessiblecaret.enabled", true);
 // Show the selection bars at the two ends of the selection highlight. Required
 // by the spec in bug 921965.
 pref("layout.accessiblecaret.bar.enabled", true);
-
-// Hide the caret in cursor mode after 3 seconds.
-pref("layout.accessiblecaret.timeout_ms", 3000);
 
 // Hide carets and text selection dialog during scrolling.
 pref("layout.accessiblecaret.always_show_when_scrolling", false);

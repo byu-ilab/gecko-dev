@@ -15,8 +15,9 @@ import time
 
 from taskgraph.util.treeherder import split_symbol
 from taskgraph.transforms.base import TransformSequence
-from taskgraph.util.schema import validate_schema
-from voluptuous import Schema, Any, Required, Optional, Extra
+from taskgraph.util.schema import validate_schema, Schema
+from taskgraph.util.scriptworker import get_release_config
+from voluptuous import Any, Required, Optional, Extra
 
 from .gecko_v2_whitelist import JOB_NAME_WHITELIST, JOB_NAME_WHITELIST_ERROR
 
@@ -54,6 +55,9 @@ task_description_schema = Schema({
     # custom scopes for this task; any scopes required for the worker will be
     # added automatically
     Optional('scopes'): [basestring],
+
+    # Tags
+    Optional('tags'): {basestring: object},
 
     # custom "task.extra" content
     Optional('extra'): {basestring: object},
@@ -124,6 +128,18 @@ task_description_schema = Schema({
     # tasks are never coalesced
     Optional('coalesce-name'): basestring,
 
+    # Optimizations to perform on this task during the optimization phase,
+    # specified in order.  These optimizations are defined in
+    # taskcluster/taskgraph/optimize.py.
+    Optional('optimizations'): [Any(
+        # search the index for the given index namespace, and replace this task if found
+        ['index-search', basestring],
+        # consult SETA and skip this task if it is low-value
+        ['seta'],
+        # skip this task if none of the given file patterns match
+        ['files-changed', [basestring]],
+    )],
+
     # the provisioner-id/worker-type for the task.  The following parameters will
     # be substituted in this string:
     #  {level} -- the scm level of this push
@@ -154,6 +170,7 @@ task_description_schema = Schema({
         Required('allow-ptrace', default=False): bool,
         Required('loopback-video', default=False): bool,
         Required('loopback-audio', default=False): bool,
+        Required('docker-in-docker', default=False): bool,  # (aka 'dind')
 
         # caches to set up for the task
         Optional('caches'): [{
@@ -243,7 +260,7 @@ task_description_schema = Schema({
             Extra: basestring,  # additional properties are allowed
         },
     }, {
-        'implementation': 'native-engine',
+        Required('implementation'): 'native-engine',
 
         # A link for an executable to download
         Optional('context'): basestring,
@@ -253,7 +270,7 @@ task_description_schema = Schema({
         Optional('reboot'): bool,
 
         # the command to run
-        Required('command'): [taskref_or_string],
+        Optional('command'): [taskref_or_string],
 
         # environment variables
         Optional('env'): {basestring: taskref_or_string},
@@ -296,10 +313,6 @@ task_description_schema = Schema({
         # the maximum time to spend signing, in seconds
         Required('max-run-time', default=600): int,
 
-        # taskid of task with artifacts to beetmove
-        # beetmover template key
-        Required('update_manifest'): bool,
-
         # locale key, if this is a locale beetmover job
         Optional('locale'): basestring,
 
@@ -332,19 +345,10 @@ task_description_schema = Schema({
             Required('paths'): [basestring],
         }],
     }),
-
-    # The "when" section contains descriptions of the circumstances
-    # under which this task can be "optimized", that is, left out of the
-    # task graph because it is unnecessary.
-    Optional('when'): Any({
-        # This task only needs to be run if a file matching one of the given
-        # patterns has changed in the push.  The patterns use the mozpack
-        # match function (python/mozbuild/mozpack/path.py).
-        Optional('files-changed'): [basestring],
-    }),
 })
 
 GROUP_NAMES = {
+    'py': 'Python unit tests',
     'tc': 'Executed by TaskCluster',
     'tc-e10s': 'Executed by TaskCluster with e10s',
     'tc-Fxfn-l': 'Firefox functional tests (local) executed by TaskCluster',
@@ -358,6 +362,7 @@ GROUP_NAMES = {
     'tc-R-e10s': 'Reftests executed by TaskCluster with e10s',
     'tc-T': 'Talos performance tests executed by TaskCluster',
     'tc-T-e10s': 'Talos performance tests executed by TaskCluster with e10s',
+    'tc-SY-e10s': 'Are we slim yet tests by TaskCluster with e10s',
     'tc-VP': 'VideoPuppeteer tests executed by TaskCluster',
     'tc-W': 'Web platform tests executed by TaskCluster',
     'tc-W-e10s': 'Web platform tests executed by TaskCluster with e10s',
@@ -366,9 +371,15 @@ GROUP_NAMES = {
     'tc-L10n': 'Localised Repacks executed by Taskcluster',
     'tc-BM-L10n': 'Beetmover for locales executed by Taskcluster',
     'tc-Up': 'Balrog submission of updates, executed by Taskcluster',
+    'tc-cs': 'Checksum signing executed by Taskcluster',
+    'tc-BMcs': 'Beetmover checksums, executed by Taskcluster',
     'Aries': 'Aries Device Image',
     'Nexus 5-L': 'Nexus 5-L Device Image',
-    'Cc': 'Toolchain builds',
+    'I': 'Docker Image Builds',
+    'TL': 'Toolchain builds for Linux 64-bits',
+    'TM': 'Toolchain builds for OSX',
+    'TW32': 'Toolchain builds for Windows 32-bits',
+    'TW64': 'Toolchain builds for Windows 64-bits',
     'SM-tc': 'Spidermonkey builds',
 }
 UNKNOWN_GROUP_NAME = "Treeherder group {} has no name; add it to " + __file__
@@ -450,6 +461,9 @@ def build_docker_worker_payload(config, task, task_def):
     if worker.get('chain-of-trust'):
         features['chainOfTrust'] = True
 
+    if worker.get('docker-in-docker'):
+        features['dind'] = True
+
     if task.get('needs-sccache'):
         features['taskclusterProxy'] = True
         task_def['scopes'].append(
@@ -470,10 +484,11 @@ def build_docker_worker_payload(config, task, task_def):
             task_def['scopes'].append('docker-worker:capability:device:' + capitalized)
 
     task_def['payload'] = payload = {
-        'command': worker['command'],
         'image': image,
         'env': worker['env'],
     }
+    if 'command' in worker:
+        payload['command'] = worker['command']
 
     if 'max-run-time' in worker:
         payload['maxRunTime'] = worker['max-run-time']
@@ -560,15 +575,17 @@ def build_scriptworker_signing_payload(config, task, task_def):
 @payload_builder('beetmover')
 def build_beetmover_payload(config, task, task_def):
     worker = task['worker']
+    release_config = get_release_config(config)
 
     task_def['payload'] = {
         'maxRunTime': worker['max-run-time'],
         'upload_date': config.params['build_date'],
-        'update_manifest': worker['update_manifest'],
         'upstreamArtifacts':  worker['upstream-artifacts']
     }
     if worker.get('locale'):
         task_def['payload']['locale'] = worker['locale']
+    if release_config:
+        task_def['payload'].update(release_config)
 
 
 @payload_builder('balrog')
@@ -588,13 +605,13 @@ def build_macosx_engine_payload(config, task, task_def):
         'path': artifact['path'],
         'type': artifact['type'],
         'expires': task_def['expires'],
-    }, worker['artifacts'])
+    }, worker.get('artifacts', []))
 
     task_def['payload'] = {
         'context': worker['context'],
         'command': worker['command'],
         'env': worker['env'],
-        'reboot': worker['reboot'],
+        'reboot': worker.get('reboot', False),
         'artifacts': artifacts,
     }
 
@@ -747,25 +764,6 @@ def add_index_routes(config, tasks):
 
 
 @transforms.add
-def add_files_changed(config, tasks):
-    for task in tasks:
-        if 'files-changed' not in task.get('when', {}):
-            yield task
-            continue
-
-        task['when']['files-changed'].extend([
-            '{}/**'.format(config.path),
-            'taskcluster/taskgraph/**',
-        ])
-
-        if 'in-tree' in task['worker'].get('docker-image', {}):
-            task['when']['files-changed'].append('taskcluster/docker/{}/**'.format(
-                task['worker']['docker-image']['in-tree']))
-
-        yield task
-
-
-@transforms.add
 def build_task(config, tasks):
     for task in tasks:
         worker_type = task['worker-type'].format(level=str(config.params['level']))
@@ -816,6 +814,9 @@ def build_task(config, tasks):
                 name=task['coalesce-name'])
             routes.append('coalesce.v1.' + key)
 
+        tags = task.get('tags', {})
+        tags.update({'createdForUser': config.params['owner']})
+
         task_def = {
             'provisionerId': provisioner_id,
             'workerType': worker_type,
@@ -834,7 +835,7 @@ def build_task(config, tasks):
                     config.path),
             },
             'extra': extra,
-            'tags': {'createdForUser': config.params['owner']},
+            'tags': tags,
         }
 
         if task_th:
@@ -855,7 +856,7 @@ def build_task(config, tasks):
             'task': task_def,
             'dependencies': task.get('dependencies', {}),
             'attributes': attributes,
-            'when': task.get('when', {}),
+            'optimizations': task.get('optimizations', []),
         }
 
 

@@ -38,6 +38,7 @@ pref("extensions.minCompatibleAppVersion", "4.0");
 pref("extensions.checkCompatibility.temporaryThemeOverride_minAppVersion", "29.0a1");
 
 pref("xpinstall.customConfirmationUI", true);
+pref("extensions.webextPermissionPrompts", true);
 
 // Preferences for AMO integration
 pref("extensions.getAddons.cache.enabled", true);
@@ -64,9 +65,6 @@ pref("extensions.systemAddon.update.url", "https://aus5.mozilla.org/update/3/Sys
 // Disable add-ons that are not installed by the user in all scopes by default.
 // See the SCOPE constants in AddonManager.jsm for values to use here.
 pref("extensions.autoDisableScopes", 15);
-
-// Whether or not webextension themes are supported.
-pref("extensions.webextensions.themes.enabled", false);
 
 // Add-on content security policies.
 pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
@@ -165,12 +163,13 @@ pref("extensions.update.background.url", "https://versioncheck-bg.addons.mozilla
 pref("extensions.update.interval", 86400);  // Check for updates to Extensions and
                                             // Themes every day
 // Non-symmetric (not shared by extensions) extension-specific [update] preferences
-pref("extensions.dss.enabled", false);          // Dynamic Skin Switching
 pref("extensions.dss.switchPending", false);    // Non-dynamic switch pending after next
                                                 // restart.
 
 pref("extensions.{972ce4c6-7e08-4474-a285-3208198ce6fd}.name", "chrome://browser/locale/browser.properties");
 pref("extensions.{972ce4c6-7e08-4474-a285-3208198ce6fd}.description", "chrome://browser/locale/browser.properties");
+
+pref("extensions.webextensions.themes.icons.buttons", "back,forward,reload,stop,bookmark_star,bookmark_menu,downloads,home,app_menu,cut,copy,paste,new_window,new_private_window,save_page,print,history,full_screen,find,options,addons,developer,synced_tabs,open_file,sidebars,share_page,subscribe,text_encoding,email_link,forget,pocket");
 
 pref("lightweightThemes.update.enabled", true);
 pref("lightweightThemes.getMoreURL", "https://addons.mozilla.org/%LOCALE%/firefox/themes");
@@ -188,8 +187,6 @@ pref("browser.uitour.loglevel", "Error");
 pref("browser.uitour.requireSecure", true);
 pref("browser.uitour.themeOrigin", "https://addons.mozilla.org/%LOCALE%/firefox/themes/");
 pref("browser.uitour.url", "https://www.mozilla.org/%LOCALE%/firefox/%VERSION%/tour/");
-// This is used as a regexp match against the page's URL.
-pref("browser.uitour.readerViewTrigger", "^https:\\/\\/www\\.mozilla\\.org\\/[^\\/]+\\/firefox\\/reading\\/start");
 // How long to show a Hearbeat survey (two hours, in seconds)
 pref("browser.uitour.surveyDuration", 7200);
 
@@ -534,7 +531,9 @@ pref("privacy.sanitize.migrateFx3Prefs",    false);
 
 pref("privacy.panicButton.enabled",         true);
 
-pref("privacy.firstparty.isolate",          false);
+pref("privacy.firstparty.isolate",                        false);
+pref("privacy.firstparty.isolate.restrict_opener_access", true);
+pref("privacy.resistFingerprinting", false);
 
 // Time until temporary permissions expire, in ms
 pref("privacy.temporary_permission_expire_time_ms",  3600000);
@@ -1194,20 +1193,8 @@ pref("browser.newtabpage.directory.source", "https://tiles.services.mozilla.com/
 // endpoint to send newtab click and view pings
 pref("browser.newtabpage.directory.ping", "https://tiles.services.mozilla.com/v3/links/");
 
-// activates the remote-hosted newtab page
-pref("browser.newtabpage.remote", false);
-
-// remote newtab version targeted
-pref("browser.newtabpage.remote.version", "1");
-
-// Toggles endpoints allowed for remote newtab communications
-pref("browser.newtabpage.remote.mode", "production");
-
-// content-signature tests for remote newtab
-pref("browser.newtabpage.remote.content-signing-test", false);
-
-// verification keys for remote-hosted newtab page
-pref("browser.newtabpage.remote.keys", "");
+// activates Activity Stream
+pref("browser.newtabpage.activity-stream.enabled", false);
 
 // Enable the DOM fullscreen API.
 pref("full-screen-api.enabled", true);
@@ -1216,6 +1203,11 @@ pref("full-screen-api.enabled", true);
 // number of startup crashes that can occur before starting into safe mode automatically
 // (this pref has no effect if more than 6 hours have passed since the last crash)
 pref("toolkit.startup.max_resumed_crashes", 3);
+
+// Whether we use pdfium to view content with the pdf mime type.
+// Note: if the pref is set to false while Firefox is open, it won't
+// take effect until there are no open pdfium tabs.
+pref("pdfium.enabled", false);
 
 // Completely disable pdf.js as an option to preview pdfs within firefox.
 // Note: if this is not disabled it does not necessarily mean pdf.js is the pdf
@@ -1263,19 +1255,15 @@ pref("dom.debug.propagate_gesture_events_through_content", false);
 
 // All the Geolocation preferences are here.
 //
-// The request URL of the GeoLocation backend.
-#ifdef RELEASE_OR_BETA
+
+// Geolocation preferences for the RELEASE and "later" Beta channels.
+// Some of these prefs are specified even though they are redundant; they are
+// here for clarity and end-user experiments.
+#ifndef EARLY_BETA_OR_EARLIER
 pref("geo.wifi.uri", "https://www.googleapis.com/geolocation/v1/geolocate?key=%GOOGLE_API_KEY%");
-#else
-pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
-#endif
 
 #ifdef XP_MACOSX
-#ifdef RELEASE_OR_BETA
 pref("geo.provider.use_corelocation", false);
-#else
-pref("geo.provider.use_corelocation", true);
-#endif
 #endif
 
 #ifdef XP_WIN
@@ -1283,19 +1271,29 @@ pref("geo.provider.ms-windows-location", false);
 #endif
 
 #ifdef MOZ_WIDGET_GTK
-#ifdef MOZ_GPSD
-#ifdef RELEASE_OR_BETA
 pref("geo.provider.use_gpsd", false);
-#else
-pref("geo.provider.use_gpsd", true);
-#endif
-#endif
 #endif
 
-// We keep allowing non-HTTPS geo requests on all the release
-// channels, for now.
-// TODO: default to false (or remove altogether) for #1072859.
-pref("geo.security.allowinsecure", true);
+#else
+
+// Geolocation preferences for Nightly/Aurora/Beta.
+pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
+
+#ifdef XP_MACOSX
+pref("geo.provider.use_corelocation", true);
+#endif
+
+// The native Windows location provider is only enabled in Nightly and likely to
+// be unstable. Set to false if things are really broken.
+#if defined(XP_WIN) && defined(NIGHTLY_BUILD)
+pref("geo.provider.ms-windows-location", true);
+#endif
+
+#if defined(MOZ_WIDGET_GTK) && defined(MOZ_GPSD)
+pref("geo.provider.use_gpsd", true);
+#endif
+
+#endif
 
 // Necko IPC security checks only needed for app isolation for cookies/cache/etc:
 // currently irrelevant for desktop e10s
@@ -1375,7 +1373,12 @@ pref("media.eme.enabled", false);
 #else
 pref("media.eme.enabled", true);
 #endif
-pref("media.eme.apiVisible", true);
+
+#ifdef NIGHTLY_BUILD
+pref("media.eme.vp9-in-mp4.enabled", true);
+#else
+pref("media.eme.vp9-in-mp4.enabled", false);
+#endif
 
 // Whether we should run a test-pattern through EME GMPs before assuming they'll
 // decode H.264.
@@ -1523,11 +1526,19 @@ pref("browser.esedbreader.loglevel", "Error");
 
 pref("browser.laterrun.enabled", false);
 
+#ifdef EARLY_BETA_OR_EARLIER
+pref("browser.migrate.automigrate.enabled", true);
+#else
 pref("browser.migrate.automigrate.enabled", false);
+#endif
 // 4 here means the suggestion notification will be automatically
 // hidden the 4th day, so it will actually be shown on 3 different days.
 pref("browser.migrate.automigrate.daysToOfferUndo", 4);
 pref("browser.migrate.automigrate.ui.enabled", true);
+
+// See comments in bug 1340115 on how we got to these numbers.
+pref("browser.migrate.chrome.history.limit", 2000);
+pref("browser.migrate.chrome.history.maxAgeInDays", 180);
 
 // Enable browser frames for use on desktop.  Only exposed to chrome callers.
 pref("dom.mozBrowserFramesEnabled", true);
@@ -1571,14 +1582,10 @@ pref("browser.crashReports.unsubmittedCheck.enabled", false);
 pref("browser.crashReports.unsubmittedCheck.chancesUntilSuppress", 4);
 pref("browser.crashReports.unsubmittedCheck.autoSubmit", false);
 
-#ifdef NIGHTLY_BUILD
-// Enable the (fairly costly) client/server validation on nightly only. The other prefs
-// controlling validation are located in /services/sync/services-sync.js
-pref("services.sync.validation.enabled", true);
-#endif
-
 // Preferences for the form autofill system extension
 pref("browser.formautofill.experimental", false);
+pref("browser.formautofill.enabled", false);
+pref("browser.formautofill.loglevel", "Warn");
 
 // Enable safebrowsing v4 tables (suffixed by "-proto") update.
 #ifdef NIGHTLY_BUILD

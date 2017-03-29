@@ -140,6 +140,9 @@ public:
   ClearInterval(int32_t aHandle);
 
   void
+  GetOrigin(nsAString& aOrigin) const;
+
+  void
   Atob(const nsAString& aAtob, nsAString& aOutput, ErrorResult& aRv) const;
   void
   Btoa(const nsAString& aBtoa, nsAString& aOutput, ErrorResult& aRv) const;
@@ -165,15 +168,18 @@ public:
   bool IsSecureContext() const;
 
   already_AddRefed<Promise>
-  CreateImageBitmap(const ImageBitmapSource& aImage, ErrorResult& aRv);
+  CreateImageBitmap(JSContext* aCx,
+                    const ImageBitmapSource& aImage, ErrorResult& aRv);
 
   already_AddRefed<Promise>
-  CreateImageBitmap(const ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const ImageBitmapSource& aImage,
                     int32_t aSx, int32_t aSy, int32_t aSw, int32_t aSh,
                     ErrorResult& aRv);
 
   already_AddRefed<mozilla::dom::Promise>
-  CreateImageBitmap(const ImageBitmapSource& aImage,
+  CreateImageBitmap(JSContext* aCx,
+                    const ImageBitmapSource& aImage,
                     int32_t aOffset, int32_t aLength,
                     mozilla::dom::ImageBitmapFormat aFormat,
                     const mozilla::dom::Sequence<mozilla::dom::ChannelPixelLayout>& aLayout,
@@ -212,7 +218,7 @@ public:
 
   void
   PostMessage(JSContext* aCx, JS::Handle<JS::Value> aMessage,
-              const Optional<Sequence<JS::Value>>& aTransferable,
+              const Sequence<JSObject*>& aTransferable,
               ErrorResult& aRv);
 
   void

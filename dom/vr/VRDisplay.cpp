@@ -12,7 +12,9 @@
 #include "mozilla/dom/VRDisplay.h"
 #include "mozilla/HoldDropJSObjects.h"
 #include "mozilla/dom/VRDisplayBinding.h"
+#include "mozilla/EventStateManager.h"
 #include "Navigator.h"
+#include "gfxPrefs.h"
 #include "gfxVR.h"
 #include "VRDisplayClient.h"
 #include "VRManagerChild.h"
@@ -450,7 +452,9 @@ VRDisplay::ResetPose()
 }
 
 already_AddRefed<Promise>
-VRDisplay::RequestPresent(const nsTArray<VRLayer>& aLayers, ErrorResult& aRv)
+VRDisplay::RequestPresent(const nsTArray<VRLayer>& aLayers,
+                          CallerType aCallerType,
+                          ErrorResult& aRv)
 {
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(GetParentObject());
   if (!global) {
@@ -464,7 +468,15 @@ VRDisplay::RequestPresent(const nsTArray<VRLayer>& aLayers, ErrorResult& aRv)
   nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
   NS_ENSURE_TRUE(obs, nullptr);
 
-  if (!IsPresenting() && IsAnyPresenting()) {
+  if (!EventStateManager::IsHandlingUserInput() &&
+      aCallerType != CallerType::System &&
+      gfxPrefs::VRRequireGesture()) {
+    // The WebVR API states that if called outside of a user gesture, the
+    // promise must be rejected.  We allow VR presentations to start within
+    // trusted events such as vrdisplayactivate, which triggers in response to
+    // HMD proximity sensors and when navigating within a VR presentation.
+    promise->MaybeRejectWithUndefined();
+  } else if (!IsPresenting() && IsAnyPresenting()) {
     // Only one presentation allowed per VRDisplay
     // on a first-come-first-serve basis.
     // If this Javascript context is presenting, then we can replace our
@@ -753,6 +765,23 @@ VRFrameInfo::Update(const gfx::VRDisplayInfo& aInfo,
                     float aDepthFar)
 {
   mVRState = aState;
+  if (mTimeStampOffset == 0.0f) {
+    /**
+     * A mTimeStampOffset value of 0.0f indicates that this is the first iteration
+     * and an offset has not yet been set.
+     *
+     * Generate a value for mTimeStampOffset such that if aState.timestamp is
+     * monotonically increasing, aState.timestamp + mTimeStampOffset will never
+     * be a negative number and will start at a pseudo-random offset
+     * between 1000.0f and 11000.0f seconds.
+     *
+     * We use a pseudo random offset rather than 0.0f just to discourage users
+     * from making the assumption that the timestamp returned in the WebVR API
+     * has a base of 0, which is not necessarily true in all UA's.
+     */
+    mTimeStampOffset = float(rand()) / RAND_MAX * 10000.0f + 1000.0f - aState.timestamp;
+  }
+  mVRState.timestamp = aState.timestamp + mTimeStampOffset;
 
   gfx::Quaternion qt;
   if (mVRState.flags & gfx::VRDisplayCapabilityFlags::Cap_Orientation) {
@@ -790,6 +819,7 @@ VRFrameInfo::Update(const gfx::VRDisplayInfo& aInfo,
 }
 
 VRFrameInfo::VRFrameInfo()
+ : mTimeStampOffset(0.0f)
 {
   mVRState.Clear();
 }

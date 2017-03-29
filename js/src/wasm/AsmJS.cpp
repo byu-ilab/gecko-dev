@@ -33,6 +33,7 @@
 #include "builtin/SIMD.h"
 #include "frontend/Parser.h"
 #include "gc/Policy.h"
+#include "jit/AtomicOperations.h"
 #include "js/MemoryMetrics.h"
 #include "vm/SelfHosting.h"
 #include "vm/StringBuffer.h"
@@ -321,6 +322,7 @@ struct js::AsmJSMetadata : Metadata, AsmJSMetadataCacheablePod
     // Function constructor, this will be the first character in the function
     // source. Otherwise, it will be the opening parenthesis of the arguments
     // list.
+    uint32_t                preludeStart;
     uint32_t                srcStart;
     uint32_t                srcBodyStart;
     bool                    strict;
@@ -1747,6 +1749,7 @@ class MOZ_STACK_CLASS ModuleValidator
         if (!asmJSMetadata_)
             return false;
 
+        asmJSMetadata_->preludeStart = moduleFunctionNode_->pn_funbox->preludeStart;
         asmJSMetadata_->srcStart = moduleFunctionNode_->pn_body->pn_pos.begin;
         asmJSMetadata_->srcBodyStart = parser_.tokenStream.currentToken().pos.end;
         asmJSMetadata_->strict = parser_.pc->sc()->strict() &&
@@ -2337,15 +2340,15 @@ class MOZ_STACK_CLASS ModuleValidator
     }
 
     bool startFunctionBodies() {
+        if (!arrayViews_.empty())
+            mg_.initMemoryUsage(atomicsPresent_ ? MemoryUsage::Shared : MemoryUsage::Unshared);
+
         return mg_.startFuncDefs();
     }
     bool finishFunctionBodies() {
         return mg_.finishFuncDefs();
     }
     SharedModule finish() {
-        if (!arrayViews_.empty())
-            mg_.initMemoryUsage(atomicsPresent_ ? MemoryUsage::Shared : MemoryUsage::Unshared);
-
         asmJSMetadata_->usesSimd = simdPresent_;
 
         MOZ_ASSERT(asmJSMetadata_->asmJSFuncNames.empty());
@@ -5802,7 +5805,8 @@ CheckCoercedCall(FunctionValidator& f, ParseNode* call, Type ret, Type* type)
 {
     MOZ_ASSERT(ret.isCanonical());
 
-    JS_CHECK_RECURSION_DONT_REPORT(f.cx(), return f.m().failOverRecursed());
+    if (!CheckRecursionLimitDontReport(f.cx()))
+        return f.m().failOverRecursed();
 
     bool isSimd = false;
     if (IsNumericLiteral(f.m(), call, &isSimd)) {
@@ -6111,7 +6115,8 @@ CheckMultiply(FunctionValidator& f, ParseNode* star, Type* type)
 static bool
 CheckAddOrSub(FunctionValidator& f, ParseNode* expr, Type* type, unsigned* numAddOrSubOut = nullptr)
 {
-    JS_CHECK_RECURSION_DONT_REPORT(f.cx(), return f.m().failOverRecursed());
+    if (!CheckRecursionLimitDontReport(f.cx()))
+        return f.m().failOverRecursed();
 
     MOZ_ASSERT(expr->isKind(PNK_ADD) || expr->isKind(PNK_SUB));
     ParseNode* lhs = AddSubLeft(expr);
@@ -6351,7 +6356,8 @@ CheckBitwise(FunctionValidator& f, ParseNode* bitwise, Type* type)
 static bool
 CheckExpr(FunctionValidator& f, ParseNode* expr, Type* type)
 {
-    JS_CHECK_RECURSION_DONT_REPORT(f.cx(), return f.m().failOverRecursed());
+    if (!CheckRecursionLimitDontReport(f.cx()))
+        return f.m().failOverRecursed();
 
     bool isSimd = false;
     if (IsNumericLiteral(f.m(), expr, &isSimd)) {
@@ -7010,7 +7016,8 @@ CheckBreakOrContinue(FunctionValidator& f, bool isBreak, ParseNode* stmt)
 static bool
 CheckStatement(FunctionValidator& f, ParseNode* stmt)
 {
-    JS_CHECK_RECURSION_DONT_REPORT(f.cx(), return f.m().failOverRecursed());
+    if (!CheckRecursionLimitDontReport(f.cx()))
+        return f.m().failOverRecursed();
 
     switch (stmt->getKind()) {
       case PNK_SEMI:          return CheckExprStatement(f, stmt);
@@ -7037,12 +7044,13 @@ ParseFunction(ModuleValidator& m, ParseNode** fnOut, unsigned* line)
     TokenStream& tokenStream = m.tokenStream();
 
     tokenStream.consumeKnownToken(TOK_FUNCTION, TokenStream::Operand);
+    uint32_t preludeStart = tokenStream.currentToken().pos.begin;
     *line = tokenStream.srcCoords.lineNum(tokenStream.currentToken().pos.end);
 
     TokenKind tk;
     if (!tokenStream.getToken(&tk, TokenStream::Operand))
         return false;
-    if (tk != TOK_NAME && tk != TOK_YIELD)
+    if (!TokenKindIsPossibleIdentifier(tk))
         return false;  // The regular parser will throw a SyntaxError, no need to m.fail.
 
     RootedPropertyName name(m.cx(), m.parser().bindingIdentifier(YieldIsName));
@@ -7059,7 +7067,7 @@ ParseFunction(ModuleValidator& m, ParseNode** fnOut, unsigned* line)
 
     ParseContext* outerpc = m.parser().pc;
     Directives directives(outerpc);
-    FunctionBox* funbox = m.parser().newFunctionBox(fn, fun, directives, NotGenerator,
+    FunctionBox* funbox = m.parser().newFunctionBox(fn, fun, preludeStart, directives, NotGenerator,
                                                     SyncFunction, /* tryAnnexB = */ false);
     if (!funbox)
         return false;
@@ -8056,7 +8064,7 @@ HandleInstantiationFailure(JSContext* cx, CallArgs args, const AsmJSMetadata& me
         return false;
     }
 
-    uint32_t begin = metadata.srcStart;
+    uint32_t begin = metadata.preludeStart;
     uint32_t end = metadata.srcEndAfterCurly();
     Rooted<JSFlatString*> src(cx, source->substringDontDeflate(cx, begin, end));
     if (!src)
@@ -8087,7 +8095,7 @@ HandleInstantiationFailure(JSContext* cx, CallArgs args, const AsmJSMetadata& me
     SourceBufferHolder::Ownership ownership = stableChars.maybeGiveOwnershipToCaller()
                                               ? SourceBufferHolder::GiveOwnership
                                               : SourceBufferHolder::NoOwnership;
-    SourceBufferHolder srcBuf(chars, stableChars.twoByteRange().length(), ownership);
+    SourceBufferHolder srcBuf(chars, end - begin, ownership);
     if (!frontend::CompileStandaloneFunction(cx, &fun, options, srcBuf, Nothing()))
         return false;
 
@@ -8451,11 +8459,10 @@ StoreAsmJSModuleInCache(AsmJSParser& parser, Module& module, JSContext* cx)
 
     const char16_t* begin = parser.tokenStream.rawCharPtrAt(ModuleChars::beginOffset(parser));
     const char16_t* end = parser.tokenStream.rawCharPtrAt(ModuleChars::endOffset(parser));
-    bool installed = parser.options().installedFile;
 
     ScopedCacheEntryOpenedForWrite entry(cx, serializedSize);
     JS::AsmJSCacheResult openResult =
-        open(cx->global(), installed, begin, end, serializedSize, &entry.memory, &entry.handle);
+        open(cx->global(), begin, end, serializedSize, &entry.memory, &entry.handle);
     if (openResult != JS::AsmJSCache_Success)
         return openResult;
 
@@ -8533,6 +8540,7 @@ LookupAsmJSModuleInCache(JSContext* cx, AsmJSParser& parser, bool* loadedFromCac
     MOZ_RELEASE_ASSERT(cursor == entry.memory + entry.serializedSize);
 
     // See AsmJSMetadata comment as well as ModuleValidator::init().
+    asmJSMetadata->preludeStart = parser.pc->functionBox()->preludeStart;
     asmJSMetadata->srcStart = parser.pc->functionBox()->functionNode->pn_body->pn_pos.begin;
     asmJSMetadata->srcBodyStart = parser.tokenStream.currentToken().pos.end;
     asmJSMetadata->strict = parser.pc->sc()->strict() && !parser.pc->sc()->hasExplicitUseStrict();
@@ -8586,8 +8594,11 @@ EstablishPreconditions(JSContext* cx, AsmJSParser& parser)
         break;
     }
 
-    if (parser.pc->isGenerator())
+    if (parser.pc->isStarGenerator() || parser.pc->isLegacyGenerator())
         return Warn(parser, JSMSG_USE_ASM_TYPE_FAIL, "Disabled by generator context");
+
+    if (parser.pc->isAsync())
+        return Warn(parser, JSMSG_USE_ASM_TYPE_FAIL, "Disabled by async context");
 
     if (parser.pc->isArrowFunction())
         return Warn(parser, JSMSG_USE_ASM_TYPE_FAIL, "Disabled by arrow function context");
@@ -8830,7 +8841,7 @@ js::AsmJSModuleToString(JSContext* cx, HandleFunction fun, bool addParenToLambda
     MOZ_ASSERT(IsAsmJSModule(fun));
 
     const AsmJSMetadata& metadata = AsmJSModuleFunctionToModule(fun).metadata().asAsmJS();
-    uint32_t begin = metadata.srcStart;
+    uint32_t begin = metadata.preludeStart;
     uint32_t end = metadata.srcEndAfterCurly();
     ScriptSource* source = metadata.scriptSource.get();
 
@@ -8839,17 +8850,15 @@ js::AsmJSModuleToString(JSContext* cx, HandleFunction fun, bool addParenToLambda
     if (addParenToLambda && fun->isLambda() && !out.append("("))
         return nullptr;
 
-    if (!out.append("function "))
-        return nullptr;
-
-    if (fun->explicitName() && !out.append(fun->explicitName()))
-        return nullptr;
-
     bool haveSource = source->hasSourceData();
     if (!haveSource && !JSScript::loadSource(cx, source, &haveSource))
         return nullptr;
 
     if (!haveSource) {
+        if (!out.append("function "))
+            return nullptr;
+         if (fun->explicitName() && !out.append(fun->explicitName()))
+             return nullptr;
         if (!out.append("() {\n    [sourceless code]\n}"))
             return nullptr;
     } else {

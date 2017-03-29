@@ -11,6 +11,7 @@
 #include "AccessibleCaretEventHub.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsGkAtoms.h"
+#include "nsGlobalWindow.h"
 #include "nsContentUtils.h"
 #include "nsIDocument.h"
 #include "nsIEditor.h"
@@ -44,6 +45,7 @@
 #include "TabChild.h"
 #include "nsFrameLoader.h"
 #include "nsNumberControlFrame.h"
+#include "nsNetUtil.h"
 
 #include "mozilla/ContentEvents.h"
 #include "mozilla/dom/Element.h"
@@ -1142,7 +1144,7 @@ bool
 ActivateOrDeactivateChild(TabParent* aParent, void* aArg)
 {
   bool active = static_cast<bool>(aArg);
-  Unused << aParent->SendParentActivated(active);
+  Unused << aParent->Manager()->SendParentActivated(aParent, active);
   return false;
 }
 
@@ -1849,6 +1851,8 @@ nsFocusManager::Focus(nsPIDOMWindowOuter* aWindow,
 
   SetFocusedWindowInternal(aWindow);
 
+  NotifyCurrentTopLevelContentWindowChange(aWindow);
+
   // Update the system focus by focusing the root widget.  But avoid this
   // if 1) aAdjustWidgets is false or 2) aContent is a plugin that has its
   // own widget and is either already focused or is about to be focused.
@@ -2127,15 +2131,7 @@ nsFocusManager::SendFocusOrBlurEvent(EventMessage aEventMessage,
   bool dontDispatchEvent =
     eventTargetDoc && nsContentUtils::IsUserFocusIgnored(eventTargetDoc);
 
-  // for focus events, if this event was from a mouse or key and event
-  // handling on the document is suppressed, queue the event and fire it
-  // later. For blur events, a non-zero value would be set for aFocusMethod.
-  if (aFocusMethod && !dontDispatchEvent &&
-      aDocument && aDocument->EventHandlingSuppressed()) {
-    // aFlags is always 0 when aWindowRaised is true so this won't be called
-    // on a window raise.
-    NS_ASSERTION(!aWindowRaised, "aWindowRaised should not be set");
-
+  if (!dontDispatchEvent && aDocument && aDocument->EventHandlingSuppressed()) {
     for (uint32_t i = mDelayedBlurFocusEvents.Length(); i > 0; --i) {
       // if this event was already queued, remove it and append it to the end
       if (mDelayedBlurFocusEvents[i - 1].mEventMessage == aEventMessage &&
@@ -2212,10 +2208,18 @@ nsFocusManager::RaiseWindow(nsPIDOMWindowOuter* aWindow)
 
   if (sTestMode) {
     // In test mode, emulate the existing window being lowered and the new
-    // window being raised.
-    if (mActiveWindow)
-      WindowLowered(mActiveWindow);
-    WindowRaised(aWindow);
+    // window being raised. This happens in a separate runnable to avoid
+    // touching multiple windows in the current runnable.
+    nsCOMPtr<nsPIDOMWindowOuter> active(mActiveWindow);
+    nsCOMPtr<nsPIDOMWindowOuter> window(aWindow);
+    RefPtr<nsFocusManager> self(this);
+    NS_DispatchToCurrentThread(
+      NS_NewRunnableFunction([self, active, window] () -> void {
+        if (active) {
+          self->WindowLowered(active);
+        }
+        self->WindowRaised(window);
+      }));
     return;
   }
 
@@ -3611,7 +3615,32 @@ nsFocusManager::SetFocusedWindowInternal(nsPIDOMWindowOuter* aWindow)
     nsCOMPtr<nsIRunnable> runnable = new PointerUnlocker();
     NS_DispatchToCurrentThread(runnable);
   }
+
+  // Update the last focus time on any affected documents
+  if (aWindow && aWindow != mFocusedWindow) {
+    const TimeStamp now(TimeStamp::Now());
+    for (nsIDocument* doc = aWindow->GetExtantDoc();
+         doc;
+         doc = doc->GetParentDocument()) {
+      doc->SetLastFocusTime(now);
+    }
+  }
+
   mFocusedWindow = aWindow;
+}
+
+void
+nsFocusManager::NotifyCurrentTopLevelContentWindowChange(
+                                                   nsPIDOMWindowOuter* aWindow)
+{
+  MOZ_ASSERT(aWindow);
+
+  nsCOMPtr<nsPIDOMWindowOuter> topWindow = aWindow->GetTop();
+  if (nsGlobalWindow::Cast(topWindow)->IsChromeWindow()) {
+    return;
+  }
+
+  NS_NotifyCurrentTopLevelOuterContentWindowId(topWindow->WindowID());
 }
 
 void

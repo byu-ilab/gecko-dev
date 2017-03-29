@@ -5,9 +5,6 @@
 
 const BAD_CERT_PAGE = "https://expired.example.com/";
 
-const CANONICAL_CONTENT = "success";
-const CANONICAL_URL = "data:text/plain;charset=utf-8," + CANONICAL_CONTENT;
-
 // This tests the alternate cert error UI when we are behind a captive portal.
 
 add_task(function* checkCaptivePortalCertErrorUI() {
@@ -31,7 +28,7 @@ add_task(function* checkCaptivePortalCertErrorUI() {
     let tab = gBrowser.addTab(BAD_CERT_PAGE);
     gBrowser.selectedTab = tab;
     browser = gBrowser.selectedBrowser;
-    certErrorLoaded = waitForCertErrorLoad(browser);
+    certErrorLoaded = BrowserTestUtils.waitForContentEvent(browser, "DOMContentLoaded");
     return tab;
   }, false);
 
@@ -46,7 +43,9 @@ add_task(function* checkCaptivePortalCertErrorUI() {
        "Captive portal error page UI is visible.");
 
     info("Clicking the Open Login Page button.");
-    doc.getElementById("openPortalLoginPageButton").click();
+    let loginButton = doc.getElementById("openPortalLoginPageButton");
+    is(loginButton.getAttribute("autofocus"), "true", "openPortalLoginPageButton has autofocus");
+    loginButton.click();
   });
 
   let portalTab = yield portalTabPromise;
@@ -65,8 +64,8 @@ add_task(function* checkCaptivePortalCertErrorUI() {
   let portalTab2 = yield portalTabPromise;
   is(portalTab2, portalTab, "The existing portal tab should be focused.");
 
-  let portalTabRemoved = BrowserTestUtils.removeTab(portalTab, {dontRemove: true});
-  let errorTabReloaded = waitForCertErrorLoad(browser);
+  let portalTabRemoved = BrowserTestUtils.tabRemoved(portalTab);
+  let errorTabReloaded = BrowserTestUtils.waitForErrorPage(browser);
 
   Services.obs.notifyObservers(null, "captive-portal-login-success", null);
   yield portalTabRemoved;

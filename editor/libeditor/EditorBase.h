@@ -11,6 +11,7 @@
 #include "mozilla/OwningNonNull.h"      // for OwningNonNull
 #include "mozilla/SelectionState.h"     // for RangeUpdater, etc.
 #include "mozilla/StyleSheet.h"   // for StyleSheet
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Text.h"
 #include "nsCOMPtr.h"                   // for already_AddRefed, nsCOMPtr
 #include "nsCycleCollectionParticipant.h"
@@ -25,6 +26,7 @@
 #include "nsIWeakReferenceUtils.h"      // for nsWeakPtr
 #include "nsLiteralString.h"            // for NS_LITERAL_STRING
 #include "nsString.h"                   // for nsCString
+#include "nsTArray.h"                   // for nsTArray and nsAutoTArray
 #include "nsWeakReference.h"            // for nsSupportsWeakReference
 #include "nscore.h"                     // for nsresult, nsAString, etc.
 
@@ -34,7 +36,6 @@ class nsIDOMDocument;
 class nsIDOMEvent;
 class nsIDOMEventListener;
 class nsIDOMEventTarget;
-class nsIDOMKeyEvent;
 class nsIDOMNode;
 class nsIDocument;
 class nsIDocumentStateListener;
@@ -111,13 +112,16 @@ class CreateElementTransaction;
 class DeleteNodeTransaction;
 class DeleteTextTransaction;
 class EditAggregateTransaction;
+class EditTransactionBase;
 class ErrorResult;
+class HTMLEditor;
 class InsertNodeTransaction;
 class InsertTextTransaction;
 class JoinNodeTransaction;
 class RemoveStyleSheetTransaction;
 class SplitNodeTransaction;
 class TextComposition;
+class TextEditor;
 struct EditorDOMPoint;
 
 namespace dom {
@@ -162,6 +166,11 @@ public:
    * interfaces is done after the construction of the editor class.
    */
   EditorBase();
+
+  virtual TextEditor* AsTextEditor() = 0;
+  virtual const TextEditor* AsTextEditor() const = 0;
+  virtual HTMLEditor* AsHTMLEditor() = 0;
+  virtual const HTMLEditor* AsHTMLEditor() const = 0;
 
 protected:
   /**
@@ -305,24 +314,47 @@ protected:
   /**
    * Create a transaction for removing aNode from its parent.
    */
-  nsresult CreateTxnForDeleteNode(nsINode* aNode,
-                                  DeleteNodeTransaction** aTransaction);
+  already_AddRefed<DeleteNodeTransaction>
+    CreateTxnForDeleteNode(nsINode* aNode);
 
-  nsresult CreateTxnForDeleteSelection(
-             EDirection aAction,
-             EditAggregateTransaction** aTransaction,
-             nsINode** aNode,
-             int32_t* aOffset,
-             int32_t* aLength);
+  /**
+   * Create an aggregate transaction for delete selection.  The result may
+   * include DeleteNodeTransactions and/or DeleteTextTransactions as its
+   * children.
+   *
+   * @param aAction             The action caused removing the selection.
+   * @param aRemovingNode       The node to be removed.
+   * @param aOffset             The start offset of the range in aRemovingNode.
+   * @param aLength             The length of the range in aRemovingNode.
+   * @return                    If it can remove the selection, returns an
+   *                            aggregate transaction which has some
+   *                            DeleteNodeTransactions and/or
+   *                            DeleteTextTransactions as its children.
+   */
+  already_AddRefed<EditAggregateTransaction>
+    CreateTxnForDeleteSelection(EDirection aAction,
+                                nsINode** aNode,
+                                int32_t* aOffset,
+                                int32_t* aLength);
 
-  nsresult CreateTxnForDeleteInsertionPoint(
-             nsRange* aRange,
-             EDirection aAction,
-             EditAggregateTransaction* aTransaction,
-             nsINode** aNode,
-             int32_t* aOffset,
-             int32_t* aLength);
-
+  /**
+   * Create a transaction for removing the nodes and/or text in aRange.
+   *
+   * @param aRangeToDelete      The range to be removed.
+   * @param aAction             The action caused removing the range.
+   * @param aRemovingNode       The node to be removed.
+   * @param aOffset             The start offset of the range in aRemovingNode.
+   * @param aLength             The length of the range in aRemovingNode.
+   * @return                    The transaction to remove the range.  Its type
+   *                            is DeleteNodeTransaction or
+   *                            DeleteTextTransaction.
+   */
+  already_AddRefed<EditTransactionBase>
+    CreateTxnForDeleteRange(nsRange* aRangeToDelete,
+                            EDirection aAction,
+                            nsINode** aRemovingNode,
+                            int32_t* aOffset,
+                            int32_t* aLength);
 
   /**
    * Create a transaction for inserting aStringToInsert into aTextNode.  Never
@@ -748,7 +780,7 @@ public:
 
   bool GetShouldTxnSetSelection();
 
-  virtual nsresult HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent);
+  virtual nsresult HandleKeyPressEvent(WidgetKeyboardEvent* aKeyboardEvent);
 
   nsresult HandleInlineSpellCheck(EditAction action,
                                   Selection* aSelection,
@@ -857,6 +889,11 @@ public:
     return !!mSelConWeak;
   }
 
+  bool IsModifiable() const
+  {
+    return !IsReadonly();
+  }
+
   /**
    * Get the input event target. This might return null.
    */
@@ -925,11 +962,6 @@ public:
 
   virtual nsresult InsertFromDrop(nsIDOMEvent* aDropEvent) = 0;
 
-  virtual already_AddRefed<nsIDOMNode> FindUserSelectAllNode(nsIDOMNode* aNode)
-  {
-    return nullptr;
-  }
-
   /**
    * GetIMESelectionStartOffsetIn() returns the start offset of IME selection in
    * the aTextNode.  If there is no IME selection, returns -1.
@@ -990,18 +1022,24 @@ protected:
   // Name of placeholder transaction.
   nsIAtom* mPlaceHolderName;
   // Saved selection state for placeholder transaction batching.
-  SelectionState* mSelState;
+  mozilla::UniquePtr<SelectionState> mSelState;
   nsString* mPhonetic;
   // IME composition this is not null between compositionstart and
   // compositionend.
   RefPtr<TextComposition> mComposition;
 
   // Listens to all low level actions on the doc.
-  nsTArray<OwningNonNull<nsIEditActionListener>> mActionListeners;
+  typedef AutoTArray<OwningNonNull<nsIEditActionListener>, 5>
+            AutoActionListenerArray;
+  AutoActionListenerArray mActionListeners;
   // Just notify once per high level change.
-  nsTArray<OwningNonNull<nsIEditorObserver>> mEditorObservers;
+  typedef AutoTArray<OwningNonNull<nsIEditorObserver>, 3>
+            AutoEditorObserverArray;
+  AutoEditorObserverArray mEditorObservers;
   // Listen to overall doc state (dirty or not, just created, etc.).
-  nsTArray<OwningNonNull<nsIDocumentStateListener>> mDocStateListeners;
+  typedef AutoTArray<OwningNonNull<nsIDocumentStateListener>, 1>
+            AutoDocumentStateListenerArray;
+  AutoDocumentStateListenerArray mDocStateListeners;
 
   // Cached selection for AutoSelectionRestorer.
   SelectionState mSavedSel;

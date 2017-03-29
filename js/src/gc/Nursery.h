@@ -135,7 +135,7 @@ class Nursery
     static const size_t Alignment = gc::ChunkSize;
     static const size_t ChunkShift = gc::ChunkShift;
 
-    explicit Nursery(ZoneGroup* group);
+    explicit Nursery(JSRuntime* rt);
     ~Nursery();
 
     MOZ_MUST_USE bool init(uint32_t maxNurseryBytes, AutoLockGC& lock);
@@ -221,11 +221,9 @@ class Nursery
     void waitBackgroundFreeEnd();
 
     MOZ_MUST_USE bool addedUniqueIdToCell(gc::Cell* cell) {
-        if (!IsInsideNursery(cell) || !isEnabled())
-            return true;
-        MOZ_ASSERT(cellsWithUid_.initialized());
-        MOZ_ASSERT(!cellsWithUid_.has(cell));
-        return cellsWithUid_.put(cell);
+        MOZ_ASSERT(IsInsideNursery(cell));
+        MOZ_ASSERT(isEnabled());
+        return cellsWithUid_.append(cell);
     }
 
     using SweepThunk = void (*)(void *data);
@@ -237,6 +235,8 @@ class Nursery
         return numChunks() * gc::ChunkSize;
     }
     size_t sizeOfMallocedBuffers(mozilla::MallocSizeOf mallocSizeOf) const {
+        if (!mallocedBuffers.initialized())
+            return 0;
         size_t total = 0;
         for (MallocedBuffersSet::Range r = mallocedBuffers.all(); !r.empty(); r.popFront())
             total += mallocSizeOf(r.front());
@@ -260,13 +260,21 @@ class Nursery
 #endif
 
     /* Print header line for profile times. */
-    void printProfileHeader();
+    static void printProfileHeader();
 
     /* Print total profile times on shutdown. */
     void printTotalProfileTimes();
 
     void* addressOfCurrentEnd() const { return (void*)&currentEnd_; }
     void* addressOfPosition() const { return (void*)&position_; }
+
+    void requestMinorGC(JS::gcreason::Reason reason) const;
+
+    bool minorGCRequested() const { return minorGCTriggerReason_ != JS::gcreason::NO_REASON; }
+    JS::gcreason::Reason minorGCTriggerReason() const { return minorGCTriggerReason_; }
+    void clearMinorGCRequest() { minorGCTriggerReason_ = JS::gcreason::NO_REASON; }
+
+    bool enableProfiling() const { return enableProfiling_; }
 
   private:
     /* The amount of space in the mapped nursery available to allocations. */
@@ -285,8 +293,7 @@ class Nursery
     static_assert(sizeof(NurseryChunk) == gc::ChunkSize,
                   "Nursery chunk size must match gc::Chunk size.");
 
-    // The set of zones which this is the nursery for.
-    ZoneGroup* zoneGroup_;
+    JSRuntime* runtime_;
 
     /* Vector of allocated chunks to allocate from. */
     Vector<NurseryChunk*, 0, SystemAllocPolicy> chunks_;
@@ -316,6 +323,13 @@ class Nursery
 
     /* Report ObjectGroups with at lest this many instances tenured. */
     int64_t reportTenurings_;
+
+    /*
+     * Whether and why a collection of this nursery has been requested. This is
+     * mutable as it is set by the store buffer, which otherwise cannot modify
+     * anything in the nursery.
+     */
+    mutable JS::gcreason::Reason minorGCTriggerReason_;
 
     /* Profiling data. */
 
@@ -372,8 +386,8 @@ class Nursery
      *       sweep. This is because this structure is used to help implement
      *       stable object hashing and we have to break the cycle somehow.
      */
-    using CellsWithUniqueIdSet = HashSet<gc::Cell*, PointerHasher<gc::Cell*, 3>, SystemAllocPolicy>;
-    CellsWithUniqueIdSet cellsWithUid_;
+    using CellsWithUniqueIdVector = Vector<gc::Cell*, 8, SystemAllocPolicy>;
+    CellsWithUniqueIdVector cellsWithUid_;
 
     struct SweepAction;
     SweepAction* sweepActions_;
@@ -412,7 +426,7 @@ class Nursery
 
     uintptr_t position() const { return position_; }
 
-    ZoneGroup* zoneGroup() const { return zoneGroup_; }
+    JSRuntime* runtime() const { return runtime_; }
 
     /* Allocates a new GC thing from the tenured generation during minor GC. */
     gc::TenuredCell* allocateFromTenured(JS::Zone* zone, gc::AllocKind thingKind);
@@ -455,6 +469,7 @@ class Nursery
     void minimizeAllocableSpace();
 
     /* Profile recording and printing. */
+    void maybeClearProfileDurations();
     void startProfile(ProfileKey key);
     void endProfile(ProfileKey key);
     void maybeStartProfile(ProfileKey key);

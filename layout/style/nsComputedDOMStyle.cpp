@@ -38,7 +38,8 @@
 #include "nsCSSPseudoElements.h"
 #include "mozilla/StyleSetHandle.h"
 #include "mozilla/StyleSetHandleInlines.h"
-#include "mozilla/RestyleManager.h"
+#include "mozilla/GeckoRestyleManager.h"
+#include "mozilla/RestyleManagerInlines.h"
 #include "imgIRequest.h"
 #include "nsLayoutUtils.h"
 #include "nsCSSKeywords.h"
@@ -566,7 +567,7 @@ public:
   }
 
 private:
-  RestyleManager* mRestyleManager = nullptr;
+  GeckoRestyleManager* mRestyleManager = nullptr;
   bool mOldSkipAnimationRules = false;
   nsComputedDOMStyle::AnimationFlag mAnimationFlag;
 };
@@ -636,7 +637,7 @@ nsComputedDOMStyle::DoGetStyleContextForElementNoFlush(
   // a throwaway style context chain.
   if (ServoStyleSet* servoSet = styleSet->GetAsServo()) {
     if (aStyleType == eDefaultOnly) {
-      NS_ERROR("stylo: ServoStyleSets cannot supply UA-only styles yet");
+      NS_WARNING("stylo: ServoStyleSets cannot supply UA-only styles yet");
       return nullptr;
     }
     return servoSet->ResolveTransientStyle(aElement, type);
@@ -865,7 +866,9 @@ nsComputedDOMStyle::UpdateCurrentStyleSources(bool aNeedsLayoutFlush)
       // We want to check that going through this path because of
       // HasPseudoElementData is rare, because it slows us down a good
       // bit.  So check that we're really inside something associated
-      // with a pseudo-element that contains elements.
+      // with a pseudo-element that contains elements.  (We also allow
+      // the element to be NAC, just in case some chrome JS calls
+      // getComputedStyle on a NAC-implemented pseudo.)
       nsStyleContext* topWithPseudoElementData = mStyleContext;
       while (topWithPseudoElementData->GetParent()->HasPseudoElementData()) {
         topWithPseudoElementData = topWithPseudoElementData->GetParent();
@@ -876,7 +879,8 @@ nsComputedDOMStyle::UpdateCurrentStyleSources(bool aNeedsLayoutFlush)
         NS_LITERAL_STRING("we should be in a pseudo-element that is expected to contain elements ("));
       assertMsg.Append(nsDependentString(pseudoAtom->GetUTF16String()));
       assertMsg.Append(')');
-      NS_ASSERTION(nsCSSPseudoElements::PseudoElementContainsElements(pseudo),
+      NS_ASSERTION(nsCSSPseudoElements::PseudoElementContainsElements(pseudo) ||
+                   mContent->IsNativeAnonymous(),
                    NS_LossyConvertUTF16toASCII(assertMsg).get());
     }
 #endif
@@ -1115,11 +1119,6 @@ void
 nsComputedDOMStyle::SetToRGBAColor(nsROCSSPrimitiveValue* aValue,
                                    nscolor aColor)
 {
-  if (NS_GET_A(aColor) == 0) {
-    aValue->SetIdent(eCSSKeyword_transparent);
-    return;
-  }
-
   nsROCSSPrimitiveValue *red   = new nsROCSSPrimitiveValue;
   nsROCSSPrimitiveValue *green = new nsROCSSPrimitiveValue;
   nsROCSSPrimitiveValue *blue  = new nsROCSSPrimitiveValue;
@@ -1223,6 +1222,15 @@ nsComputedDOMStyle::DoGetColumnFill()
 }
 
 already_AddRefed<CSSValue>
+nsComputedDOMStyle::DoGetColumnSpan()
+{
+  RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
+  val->SetIdent(nsCSSProps::ValueToKeywordEnum(StyleColumn()->mColumnSpan,
+                                               nsCSSProps::kColumnSpanKTable));
+  return val.forget();
+}
+
+already_AddRefed<CSSValue>
 nsComputedDOMStyle::DoGetColumnRuleWidth()
 {
   RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
@@ -1307,7 +1315,7 @@ nsComputedDOMStyle::DoGetContent()
           str.AppendLiteral("counters(");
         }
         // WRITE ME
-        nsCSSValue::Array* a = data.GetCounters();
+        nsCSSValue::ThreadSafeArray* a = data.GetCounters();
 
         nsStyleUtil::AppendEscapedCSSIdent(
           nsDependentString(a->Item(0).GetStringBufferValue()), str);
@@ -1791,18 +1799,38 @@ nsComputedDOMStyle::DoGetFontKerning()
   return val.forget();
 }
 
+static void
+SerializeLanguageOverride(uint32_t aLanguageOverride, nsAString& aResult)
+{
+  aResult.Truncate();
+  uint32_t i;
+  for (i = 0; i < 4 ; i++) {
+    char16_t ch = aLanguageOverride >> 24;
+    MOZ_ASSERT(nsCRT::IsAscii(ch),
+               "Invalid tags, we should've handled this during computing!");
+    aResult.Append(ch);
+    aLanguageOverride = aLanguageOverride << 8;
+  }
+  // strip trailing whitespaces
+  while (i > 0 && aResult[i - 1] == ' ') {
+    i--;
+  }
+  aResult.Truncate(i);
+}
+
 already_AddRefed<CSSValue>
 nsComputedDOMStyle::DoGetFontLanguageOverride()
 {
   RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
 
   const nsStyleFont* font = StyleFont();
-  if (font->mFont.languageOverride.IsEmpty()) {
+  if (font->mFont.languageOverride == 0) {
     val->SetIdent(eCSSKeyword_normal);
   } else {
-    nsAutoString str;
-    nsStyleUtil::AppendEscapedCSSString(font->mFont.languageOverride, str);
-    val->SetString(str);
+    nsAutoString serializedStr, escapedStr;
+    SerializeLanguageOverride(font->mFont.languageOverride, serializedStr);
+    nsStyleUtil::AppendEscapedCSSString(serializedStr, escapedStr);
+    val->SetString(escapedStr);
   }
   return val.forget();
 }
@@ -2258,17 +2286,11 @@ nsComputedDOMStyle::SetValueToStyleImage(const nsStyleImage& aStyleImage,
   switch (aStyleImage.GetType()) {
     case eStyleImageType_Image:
     {
-      imgIRequest* req = aStyleImage.GetImageData();
-      if (!req) {
-        // XXXheycam If we had some problem resolving the imgRequestProxy,
-        // maybe we should just use the URL stored in the nsStyleImage's
-        // mImageValue?  (Similarly in DoGetListStyleImage.)
+      nsCOMPtr<nsIURI> uri = aStyleImage.GetImageURI();
+      if (!uri) {
         aValue->SetIdent(eCSSKeyword_none);
         break;
       }
-
-      nsCOMPtr<nsIURI> uri;
-      req->GetURI(getter_AddRefs(uri));
 
       const UniquePtr<nsStyleSides>& cropRect = aStyleImage.GetCropRect();
       if (cropRect) {
@@ -3687,18 +3709,10 @@ nsComputedDOMStyle::DoGetListStyleImage()
 {
   RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
 
-  const nsStyleList* list = StyleList();
-
-  // XXXheycam As in SetValueToStyleImage, we might want to use the
-  // URL stored in the nsStyleImageRequest's mImageValue if we
-  // failed to resolve the imgRequestProxy.
-
-  imgRequestProxy* image = list->GetListStyleImage();
-  if (!image) {
+  nsCOMPtr<nsIURI> uri = StyleList()->GetListStyleImageURI();
+  if (!uri) {
     val->SetIdent(eCSSKeyword_none);
   } else {
-    nsCOMPtr<nsIURI> uri;
-    image->GetURI(getter_AddRefs(uri));
     val->SetURI(uri);
   }
 
@@ -4054,6 +4068,16 @@ nsComputedDOMStyle::DoGetTextIndent()
 }
 
 already_AddRefed<CSSValue>
+nsComputedDOMStyle::DoGetTextJustify()
+{
+  RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
+  val->SetIdent(
+    nsCSSProps::ValueToKeywordEnum(StyleText()->mTextJustify,
+                                   nsCSSProps::kTextJustifyKTable));
+  return val.forget();
+}
+
+already_AddRefed<CSSValue>
 nsComputedDOMStyle::DoGetTextOrientation()
 {
   RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
@@ -4105,6 +4129,15 @@ nsComputedDOMStyle::DoGetTextShadow()
   return GetCSSShadowArray(StyleText()->mTextShadow,
                            StyleColor()->mColor,
                            false);
+}
+
+already_AddRefed<CSSValue>
+nsComputedDOMStyle::DoGetTextSizeAdjust()
+{
+  RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
+  val->SetIdent(nsCSSProps::ValueToKeywordEnum(StyleText()->mTextSizeAdjust,
+                                               nsCSSProps::kTextSizeAdjustKTable));
+  return val.forget();
 }
 
 already_AddRefed<CSSValue>
@@ -4198,24 +4231,6 @@ nsComputedDOMStyle::DoGetHyphens()
   val->SetIdent(
     nsCSSProps::ValueToKeywordEnum(StyleText()->mHyphens,
                                    nsCSSProps::kHyphensKTable));
-  return val.forget();
-}
-
-already_AddRefed<CSSValue>
-nsComputedDOMStyle::DoGetTextSizeAdjust()
-{
-  RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
-  switch (StyleText()->mTextSizeAdjust) {
-    default:
-      NS_NOTREACHED("unexpected value");
-      MOZ_FALLTHROUGH;
-    case NS_STYLE_TEXT_SIZE_ADJUST_AUTO:
-      val->SetIdent(eCSSKeyword_auto);
-      break;
-    case NS_STYLE_TEXT_SIZE_ADJUST_NONE:
-      val->SetIdent(eCSSKeyword_none);
-      break;
-  }
   return val.forget();
 }
 
@@ -4346,6 +4361,14 @@ nsComputedDOMStyle::DoGetAppearance()
   return val.forget();
 }
 
+already_AddRefed<CSSValue>
+nsComputedDOMStyle::DoGetMozAppearance()
+{
+  RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
+  val->SetIdent(nsCSSProps::ValueToKeywordEnum(StyleDisplay()->mMozAppearance,
+                                               nsCSSProps::kMozAppearanceKTable));
+  return val.forget();
+}
 
 already_AddRefed<CSSValue>
 nsComputedDOMStyle::DoGetBoxAlign()
@@ -4631,7 +4654,7 @@ nsComputedDOMStyle::DoGetJustifyItems()
   RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
   nsAutoString str;
   auto justify =
-    StylePosition()->ComputedJustifyItems(mStyleContext->GetParent());
+    StylePosition()->ComputedJustifyItems(mStyleContext->GetParentAllowServo());
   nsCSSValue::AppendAlignJustifyValueToString(justify, str);
   val->SetString(str);
   return val.forget();
@@ -4829,7 +4852,7 @@ nsComputedDOMStyle::DoGetClip()
 already_AddRefed<CSSValue>
 nsComputedDOMStyle::DoGetWillChange()
 {
-  const nsTArray<nsString>& willChange = StyleDisplay()->mWillChange;
+  const nsCOMArray<nsIAtom>& willChange = StyleDisplay()->mWillChange;
 
   if (willChange.IsEmpty()) {
     RefPtr<nsROCSSPrimitiveValue> val = new nsROCSSPrimitiveValue;
@@ -4838,10 +4861,9 @@ nsComputedDOMStyle::DoGetWillChange()
   }
 
   RefPtr<nsDOMCSSValueList> valueList = GetROCSSValueList(true);
-  for (size_t i = 0; i < willChange.Length(); i++) {
-    const nsString& willChangeIdentifier = willChange[i];
+  for (const nsIAtom* ident : willChange) {
     RefPtr<nsROCSSPrimitiveValue> property = new nsROCSSPrimitiveValue;
-    property->SetString(willChangeIdentifier);
+    property->SetString(nsDependentAtomString(ident));
     valueList->AppendCSSValue(property.forget());
   }
 
@@ -6221,10 +6243,9 @@ nsComputedDOMStyle::CreatePrimitiveValueForShapeSource(
   return valueList.forget();
 }
 
-template<typename ReferenceBox>
 already_AddRefed<CSSValue>
 nsComputedDOMStyle::GetShapeSource(
-  const StyleShapeSource<ReferenceBox>& aShapeSource,
+  const StyleShapeSource& aShapeSource,
   const KTableEntry aBoxKeywordTable[])
 {
   switch (aShapeSource.GetType()) {
@@ -6348,8 +6369,8 @@ nsComputedDOMStyle::DoGetMask()
   // need to support computed style for the cases where it used to be
   // a longhand.
   if (svg->mMask.mImageCount > 1 ||
-      firstLayer.mClip != StyleGeometryBox::Border ||
-      firstLayer.mOrigin != StyleGeometryBox::Border ||
+      firstLayer.mClip != StyleGeometryBox::BorderBox ||
+      firstLayer.mOrigin != StyleGeometryBox::BorderBox ||
       firstLayer.mComposite != NS_STYLE_MASK_COMPOSITE_ADD ||
       firstLayer.mMaskMode != NS_STYLE_MASK_MODE_MATCH_SOURCE ||
       !nsStyleImageLayers::IsInitialPositionForLayerType(
@@ -6563,8 +6584,12 @@ nsComputedDOMStyle::AppendTimingFunction(nsDOMCSSValueList *aValueList,
     case nsTimingFunction::Type::StepStart:
     case nsTimingFunction::Type::StepEnd:
       nsStyleUtil::AppendStepsTimingFunction(aTimingFunction.mType,
-                                             aTimingFunction.mSteps,
+                                             aTimingFunction.mStepsOrFrames,
                                              tmp);
+      break;
+    case nsTimingFunction::Type::Frames:
+      nsStyleUtil::AppendFramesTimingFunction(aTimingFunction.mStepsOrFrames,
+                                              tmp);
       break;
     default:
       nsStyleUtil::AppendCubicBezierKeywordTimingFunction(aTimingFunction.mType,

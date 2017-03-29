@@ -7,14 +7,15 @@
 #ifndef DocGroup_h
 #define DocGroup_h
 
-#include "nsISupports.h"
 #include "nsISupportsImpl.h"
 #include "nsIPrincipal.h"
 #include "nsTHashtable.h"
 #include "nsString.h"
 
-#include "mozilla/dom/Dispatcher.h"
+#include "mozilla/dom/TabGroup.h"
+#include "mozilla/Dispatcher.h"
 #include "mozilla/RefPtr.h"
+#include "mozilla/dom/CustomElementRegistry.h"
 
 namespace mozilla {
 class AbstractThread;
@@ -35,15 +36,13 @@ namespace dom {
 // (through its DocGroups) the documents from one or more tabs related by
 // window.opener. A DocGroup is a member of exactly one TabGroup.
 
-class TabGroup;
-
 class DocGroup final : public Dispatcher
 {
 public:
   typedef nsTArray<nsIDocument*>::iterator Iterator;
   friend class TabGroup;
 
-  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DocGroup, override)
 
   // Returns NS_ERROR_FAILURE and sets |aString| to an empty string if the TLD
   // service isn't available. Returns NS_OK on success, but may still set
@@ -58,6 +57,14 @@ public:
   TabGroup* GetTabGroup()
   {
     return mTabGroup;
+  }
+  mozilla::dom::CustomElementReactionsStack* CustomElementReactionsStack()
+  {
+    if (!mReactionsStack) {
+      mReactionsStack = new mozilla::dom::CustomElementReactionsStack();
+    }
+
+    return mReactionsStack;
   }
   void RemoveDocument(nsIDocument* aWindow);
 
@@ -77,16 +84,28 @@ public:
 
   virtual nsIEventTarget* EventTargetFor(TaskCategory aCategory) const override;
 
-  virtual AbstractThread*
-  AbstractMainThreadFor(TaskCategory aCategory) override;
+  // Ensure that it's valid to access the DocGroup at this time.
+  void ValidateAccess() const
+  {
+    mTabGroup->ValidateAccess();
+  }
+
+  // Return a pointer that can be continually checked to see if access to this
+  // DocGroup is valid. This pointer should live at least as long as the
+  // DocGroup.
+  bool* GetValidAccessPtr();
 
 private:
+  virtual AbstractThread*
+  AbstractMainThreadForImpl(TaskCategory aCategory) override;
+
   DocGroup(TabGroup* aTabGroup, const nsACString& aKey);
   ~DocGroup();
 
   nsCString mKey;
   RefPtr<TabGroup> mTabGroup;
   nsTArray<nsIDocument*> mDocuments;
+  RefPtr<mozilla::dom::CustomElementReactionsStack> mReactionsStack;
 };
 
 } // namespace dom

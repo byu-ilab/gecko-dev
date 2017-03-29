@@ -147,20 +147,13 @@ CreateClientInfo()
 } // end of namespace mozilla.
 
 nsUrlClassifierUtils::nsUrlClassifierUtils()
-  : mEscapeCharmap(nullptr)
-  , mProviderDictLock("nsUrlClassifierUtils.mProviderDictLock")
+  : mProviderDictLock("nsUrlClassifierUtils.mProviderDictLock")
 {
 }
 
 nsresult
 nsUrlClassifierUtils::Init()
 {
-  // Everything but alpha numerics, - and .
-  mEscapeCharmap = new Charmap(0xffffffff, 0xfc009fff, 0xf8000001, 0xf8000001,
-                               0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff);
-  if (!mEscapeCharmap)
-    return NS_ERROR_OUT_OF_MEMORY;
-
   // nsIUrlClassifierUtils is a thread-safe service so it's
   // allowed to use on non-main threads. However, building
   // the provider dictionary must be on the main thread.
@@ -237,6 +230,10 @@ static const struct {
   { "googpub-phish-proto", SOCIAL_ENGINEERING_PUBLIC}, // 2
   { "goog-unwanted-proto", UNWANTED_SOFTWARE},         // 3
   { "goog-phish-proto", SOCIAL_ENGINEERING},           // 5
+
+  // For application reputation
+  { "goog-badbinurl-proto", MALICIOUS_BINARY},         // 7
+  { "goog-downloadwhite-proto", CSD_DOWNLOAD_WHITELIST},  // 9
 
   // For testing purpose.
   { "test-phish-proto",    SOCIAL_ENGINEERING_PUBLIC}, // 2
@@ -430,7 +427,8 @@ nsUrlClassifierUtils::MakeFindFullHashRequestV4(const char** aListNames,
 static uint32_t
 DurationToMs(const Duration& aDuration)
 {
-  return aDuration.seconds() * 1000 + aDuration.nanos() / 1000;
+  // Seconds precision is good enough. Ignore nanoseconds like Chrome does.
+  return aDuration.seconds() * 1000;
 }
 
 NS_IMETHODIMP
@@ -461,9 +459,12 @@ nsUrlClassifierUtils::ParseFindFullHashResponseV4(const nsACString& aResponse,
       continue; // Ignore un-convertable threat type.
     }
     auto& hash = m.threat().hash();
+    auto cacheDuration = DurationToMs(m.cache_duration());
     aCallback->OnCompleteHashFound(nsCString(hash.c_str(), hash.length()),
-                                   tableNames,
-                                   DurationToMs(m.cache_duration()));
+                                   tableNames, cacheDuration);
+
+    Telemetry::Accumulate(Telemetry::URLCLASSIFIER_POSITIVE_CACHE_DURATION,
+                          cacheDuration);
   }
 
   auto minWaitDuration = DurationToMs(r.minimum_wait_duration());
@@ -473,6 +474,9 @@ nsUrlClassifierUtils::ParseFindFullHashResponseV4(const nsACString& aResponse,
 
   Telemetry::Accumulate(Telemetry::URLCLASSIFIER_COMPLETION_ERROR,
                         hasUnknownThreatType ? UNKNOWN_THREAT_TYPE : SUCCESS);
+
+  Telemetry::Accumulate(Telemetry::URLCLASSIFIER_NEGATIVE_CACHE_DURATION,
+                        negCacheDuration);
 
   return NS_OK;
 }

@@ -22,6 +22,7 @@
 #include "jsarray.h"
 #include "jsatom.h"
 #include "jscntxt.h"
+#include "jsexn.h"
 #include "jsfriendapi.h"
 #include "jsfun.h"
 #include "jsgc.h"
@@ -53,7 +54,7 @@
 #include "vm/ProxyObject.h"
 #include "vm/RegExpStaticsObject.h"
 #include "vm/Shape.h"
-#include "vm/TypedArrayCommon.h"
+#include "vm/TypedArrayObject.h"
 
 #include "jsatominlines.h"
 #include "jsboolinlines.h"
@@ -85,6 +86,30 @@ js::ReportNotObject(JSContext* cx, const Value& v)
     if (bytes)
         JS_ReportErrorNumberLatin1(cx, GetErrorMessage, nullptr, JSMSG_NOT_NONNULL_OBJECT,
                                    bytes.get());
+}
+
+void
+js::ReportNotObjectArg(JSContext* cx, const char* nth, const char* fun, HandleValue v)
+{
+    MOZ_ASSERT(!v.isObject());
+
+    JSAutoByteString bytes;
+    if (const char* chars = ValueToSourceForError(cx, v, bytes)) {
+        JS_ReportErrorNumberLatin1(cx, GetErrorMessage, nullptr, JSMSG_NOT_NONNULL_OBJECT_ARG,
+                                   nth, fun, chars);
+    }
+}
+
+void
+js::ReportNotObjectWithName(JSContext* cx, const char* name, HandleValue v)
+{
+    MOZ_ASSERT(!v.isObject());
+
+    JSAutoByteString bytes;
+    if (const char* chars = ValueToSourceForError(cx, v, bytes)) {
+        JS_ReportErrorNumberLatin1(cx, GetErrorMessage, nullptr, JSMSG_NOT_NONNULL_OBJECT_NAME,
+                                   name, chars);
+    }
 }
 
 JS_PUBLIC_API(const char*)
@@ -275,7 +300,7 @@ js::ToPropertyDescriptor(JSContext* cx, HandleValue descval, bool checkAccessors
                          MutableHandle<PropertyDescriptor> desc)
 {
     // step 2
-    RootedObject obj(cx, NonNullObject(cx, descval));
+    RootedObject obj(cx, NonNullObjectWithName(cx, "property descriptor", descval));
     if (!obj)
         return false;
 
@@ -646,8 +671,14 @@ NewObject(JSContext* cx, HandleObjectGroup group, gc::AllocKind kind,
         return nullptr;
 
     gc::InitialHeap heap = GetInitialHeap(newKind, clasp);
+
     JSObject* obj;
-    JS_TRY_VAR_OR_RETURN_NULL(cx, obj, JSObject::create(cx, kind, heap, shape, group));
+    if (MOZ_LIKELY(clasp->isNative())) {
+        JS_TRY_VAR_OR_RETURN_NULL(cx, obj, NativeObject::create(cx, kind, heap, shape, group));
+    } else {
+        MOZ_ASSERT(IsTypedObjectClass(clasp));
+        JS_TRY_VAR_OR_RETURN_NULL(cx, obj, TypedObject::create(cx, kind, heap, shape, group));
+    }
 
     if (newKind == SingletonObject) {
         RootedObject nobj(cx, obj);
@@ -1450,40 +1481,41 @@ js::XDRObjectLiteral(XDRState<XDR_ENCODE>* xdr, MutableHandleObject obj);
 template bool
 js::XDRObjectLiteral(XDRState<XDR_DECODE>* xdr, MutableHandleObject obj);
 
-bool
-NativeObject::fillInAfterSwap(JSContext* cx, const Vector<Value>& values, void* priv)
+/* static */ bool
+NativeObject::fillInAfterSwap(JSContext* cx, HandleNativeObject obj,
+                              const Vector<Value>& values, void* priv)
 {
     // This object has just been swapped with some other object, and its shape
     // no longer reflects its allocated size. Correct this information and
     // fill the slots in with the specified values.
-    MOZ_ASSERT(slotSpan() == values.length());
+    MOZ_ASSERT(obj->slotSpan() == values.length());
 
     // Make sure the shape's numFixedSlots() is correct.
-    size_t nfixed = gc::GetGCKindSlots(asTenured().getAllocKind(), getClass());
-    if (nfixed != shape_->numFixedSlots()) {
-        if (!generateOwnShape(cx))
+    size_t nfixed = gc::GetGCKindSlots(obj->asTenured().getAllocKind(), obj->getClass());
+    if (nfixed != obj->shape_->numFixedSlots()) {
+        if (!NativeObject::generateOwnShape(cx, obj))
             return false;
-        shape_->setNumFixedSlots(nfixed);
+        obj->shape_->setNumFixedSlots(nfixed);
     }
 
-    if (hasPrivate())
-        setPrivate(priv);
+    if (obj->hasPrivate())
+        obj->setPrivate(priv);
     else
         MOZ_ASSERT(!priv);
 
-    if (slots_) {
-        js_free(slots_);
-        slots_ = nullptr;
+    if (obj->slots_) {
+        js_free(obj->slots_);
+        obj->slots_ = nullptr;
     }
 
-    if (size_t ndynamic = dynamicSlotsCount(nfixed, values.length(), getClass())) {
-        slots_ = cx->zone()->pod_malloc<HeapSlot>(ndynamic);
-        if (!slots_)
+    if (size_t ndynamic = dynamicSlotsCount(nfixed, values.length(), obj->getClass())) {
+        obj->slots_ = cx->zone()->pod_malloc<HeapSlot>(ndynamic);
+        if (!obj->slots_)
             return false;
-        Debug_SetSlotRangeToCrashOnTouch(slots_, ndynamic);
+        Debug_SetSlotRangeToCrashOnTouch(obj->slots_, ndynamic);
     }
 
-    initSlotRange(0, values.begin(), values.length());
+    obj->initSlotRange(0, values.begin(), values.length());
     return true;
 }
 
@@ -1505,9 +1537,10 @@ JSObject::swap(JSContext* cx, HandleObject a, HandleObject b)
                IsBackgroundFinalized(b->asTenured().getAllocKind()));
     MOZ_ASSERT(a->compartment() == b->compartment());
 
-    AutoEnterOOMUnsafeRegion oomUnsafe;
+    // You must have entered the objects' compartment before calling this.
+    MOZ_ASSERT(cx->compartment() == a->compartment());
 
-    AutoCompartment ac(cx, a);
+    AutoEnterOOMUnsafeRegion oomUnsafe;
 
     if (!JSObject::getGroup(cx, a))
         oomUnsafe.crash("JSObject::swap");
@@ -1593,10 +1626,14 @@ JSObject::swap(JSContext* cx, HandleObject a, HandleObject b)
         a->fixDictionaryShapeAfterSwap();
         b->fixDictionaryShapeAfterSwap();
 
-        if (na && !b->as<NativeObject>().fillInAfterSwap(cx, avals, apriv))
-            oomUnsafe.crash("fillInAfterSwap");
-        if (nb && !a->as<NativeObject>().fillInAfterSwap(cx, bvals, bpriv))
-            oomUnsafe.crash("fillInAfterSwap");
+        if (na) {
+            if (!NativeObject::fillInAfterSwap(cx, b.as<NativeObject>(), avals, apriv))
+                oomUnsafe.crash("fillInAfterSwap");
+        }
+        if (nb) {
+            if (!NativeObject::fillInAfterSwap(cx, a.as<NativeObject>(), bvals, bpriv))
+                oomUnsafe.crash("fillInAfterSwap");
+        }
     }
 
     // Swapping the contents of two objects invalidates type sets which contain
@@ -1859,7 +1896,7 @@ js::SetClassAndProto(JSContext* cx, HandleObject obj,
             // We always generate a new shape if the object is a singleton,
             // regardless of the uncacheable-proto flag. ICs may rely on
             // this.
-            if (!oldproto->as<NativeObject>().generateOwnShape(cx))
+            if (!NativeObject::generateOwnShape(cx, oldproto.as<NativeObject>()))
                 return false;
         } else {
             if (!JSObject::setUncacheableProto(cx, oldproto))
@@ -2855,7 +2892,7 @@ js::UnwatchGuts(JSContext* cx, JS::HandleObject origObj, JS::HandleId id)
     // need to check for nativeness or watchable-ness here.
     RootedObject obj(cx, ToWindowIfWindowProxy(origObj));
     if (WatchpointMap* wpmap = cx->compartment()->watchpointMap)
-        wpmap->unwatch(obj, id, nullptr, nullptr);
+        wpmap->unwatch(obj, id);
     return true;
 }
 
@@ -2987,7 +3024,7 @@ ReportCantConvert(JSContext* cx, unsigned errorNumber, HandleObject obj, JSType 
 
     RootedValue val(cx, ObjectValue(*obj));
     ReportValueError2(cx, errorNumber, JSDVG_SEARCH_STACK, val, str,
-                      hint == JSTYPE_VOID
+                      hint == JSTYPE_UNDEFINED
                       ? "primitive type"
                       : hint == JSTYPE_STRING ? "string" : "number");
     return false;
@@ -2996,7 +3033,7 @@ ReportCantConvert(JSContext* cx, unsigned errorNumber, HandleObject obj, JSType 
 bool
 JS::OrdinaryToPrimitive(JSContext* cx, HandleObject obj, JSType hint, MutableHandleValue vp)
 {
-    MOZ_ASSERT(hint == JSTYPE_NUMBER || hint == JSTYPE_STRING || hint == JSTYPE_VOID);
+    MOZ_ASSERT(hint == JSTYPE_NUMBER || hint == JSTYPE_STRING || hint == JSTYPE_UNDEFINED);
 
     Rooted<jsid> id(cx);
 
@@ -3064,7 +3101,7 @@ js::ToPrimitiveSlow(JSContext* cx, JSType preferredType, MutableHandleValue vp)
 {
     // Step numbers refer to the first algorithm listed in ES6 draft rev 36
     // (2015 Mar 17) 7.1.1 ToPrimitive.
-    MOZ_ASSERT(preferredType == JSTYPE_VOID ||
+    MOZ_ASSERT(preferredType == JSTYPE_UNDEFINED ||
                preferredType == JSTYPE_STRING ||
                preferredType == JSTYPE_NUMBER);
     RootedObject obj(cx, &vp.toObject());
@@ -3285,18 +3322,6 @@ GetObjectSlotNameFunctor::operator()(JS::CallbackTracer* trc, char* buf, size_t 
         }
     }
 }
-
-bool
-js::ReportGetterOnlyAssignment(JSContext* cx, bool strict)
-{
-    return JS_ReportErrorFlagsAndNumberASCII(cx,
-                                             strict
-                                             ? JSREPORT_ERROR
-                                             : JSREPORT_WARNING | JSREPORT_STRICT,
-                                             GetErrorMessage, nullptr,
-                                             JSMSG_GETTER_ONLY);
-}
-
 
 /*** Debugging routines **************************************************************************/
 
@@ -3854,11 +3879,12 @@ JSObject::traceChildren(JSTracer* trc)
 {
     TraceEdge(trc, &group_, "group");
 
+    if (is<ShapedObject>())
+        as<ShapedObject>().traceShape(trc);
+
     const Class* clasp = group_->clasp();
     if (clasp->isNative()) {
         NativeObject* nobj = &as<NativeObject>();
-
-        TraceEdge(trc, &nobj->shape_, "shape");
 
         {
             GetObjectSlotNameFunctor func(nobj);
@@ -3975,3 +4001,54 @@ js::Unbox(JSContext* cx, HandleObject obj, MutableHandleValue vp)
 
     return true;
 }
+
+#ifdef DEBUG
+/* static */ void
+JSObject::debugCheckNewObject(ObjectGroup* group, Shape* shape, js::gc::AllocKind allocKind,
+                              js::gc::InitialHeap heap)
+{
+    const js::Class* clasp = group->clasp();
+    MOZ_ASSERT(clasp != &ArrayObject::class_);
+
+    if (shape)
+        MOZ_ASSERT(clasp == shape->getObjectClass());
+    else
+        MOZ_ASSERT(clasp == &UnboxedPlainObject::class_ || clasp == &UnboxedArrayObject::class_);
+
+    if (!ClassCanHaveFixedData(clasp)) {
+        MOZ_ASSERT(shape);
+        MOZ_ASSERT(gc::GetGCKindSlots(allocKind, clasp) == shape->numFixedSlots());
+    }
+
+    // Classes with a finalizer must specify whether instances will be finalized
+    // on the active thread or in the background, except proxies whose behaviour
+    // depends on the target object.
+    static const uint32_t FinalizeMask = JSCLASS_FOREGROUND_FINALIZE | JSCLASS_BACKGROUND_FINALIZE;
+    uint32_t flags = clasp->flags;
+    uint32_t finalizeFlags = flags & FinalizeMask;
+    if (clasp->hasFinalize() && !clasp->isProxy()) {
+        MOZ_ASSERT(finalizeFlags == JSCLASS_FOREGROUND_FINALIZE ||
+                   finalizeFlags == JSCLASS_BACKGROUND_FINALIZE);
+        MOZ_ASSERT((finalizeFlags == JSCLASS_BACKGROUND_FINALIZE) == IsBackgroundFinalized(allocKind));
+    } else {
+        MOZ_ASSERT(finalizeFlags == 0);
+    }
+
+    MOZ_ASSERT_IF(clasp->hasFinalize(), heap == gc::TenuredHeap ||
+                                        CanNurseryAllocateFinalizedClass(clasp) ||
+                                        clasp->isProxy());
+    MOZ_ASSERT_IF(group->hasUnanalyzedPreliminaryObjects(), heap == gc::TenuredHeap);
+
+    MOZ_ASSERT(!group->compartment()->hasObjectPendingMetadata());
+
+    // Non-native classes cannot have reserved slots or private data, and the
+    // objects can't have any fixed slots, for compatibility with
+    // GetReservedOrProxyPrivateSlot.
+    if (!clasp->isNative()) {
+        MOZ_ASSERT(JSCLASS_RESERVED_SLOTS(clasp) == 0);
+        MOZ_ASSERT(!clasp->hasPrivate());
+        MOZ_ASSERT_IF(shape, shape->numFixedSlots() == 0);
+        MOZ_ASSERT_IF(shape, shape->slotSpan() == 0);
+    }
+}
+#endif

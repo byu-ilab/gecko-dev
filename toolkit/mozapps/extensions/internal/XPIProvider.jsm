@@ -103,9 +103,8 @@ const PREF_INSTALL_CACHE              = "extensions.installCache";
 const PREF_XPI_STATE                  = "extensions.xpiState";
 const PREF_BOOTSTRAP_ADDONS           = "extensions.bootstrappedAddons";
 const PREF_PENDING_OPERATIONS         = "extensions.pendingOperations";
-const PREF_EM_DSS_ENABLED             = "extensions.dss.enabled";
-const PREF_DSS_SWITCHPENDING          = "extensions.dss.switchPending";
-const PREF_DSS_SKIN_TO_SELECT         = "extensions.lastSelectedSkin";
+const PREF_SKIN_SWITCHPENDING         = "extensions.dss.switchPending";
+const PREF_SKIN_TO_SELECT             = "extensions.lastSelectedSkin";
 const PREF_GENERAL_SKINS_SELECTEDSKIN = "general.skins.selectedSkin";
 const PREF_EM_UPDATE_URL              = "extensions.update.url";
 const PREF_EM_UPDATE_BACKGROUND_URL   = "extensions.update.background.url";
@@ -215,14 +214,14 @@ const STATIC_BLOCKLIST_PATTERNS = [
 
 
 const BOOTSTRAP_REASONS = {
-  APP_STARTUP     : 1,
-  APP_SHUTDOWN    : 2,
-  ADDON_ENABLE    : 3,
-  ADDON_DISABLE   : 4,
-  ADDON_INSTALL   : 5,
-  ADDON_UNINSTALL : 6,
-  ADDON_UPGRADE   : 7,
-  ADDON_DOWNGRADE : 8
+  APP_STARTUP: 1,
+  APP_SHUTDOWN: 2,
+  ADDON_ENABLE: 3,
+  ADDON_DISABLE: 4,
+  ADDON_INSTALL: 5,
+  ADDON_UNINSTALL: 6,
+  ADDON_UPGRADE: 7,
+  ADDON_DOWNGRADE: 8
 };
 
 // Map new string type identifiers to old style nsIUpdateItem types
@@ -242,8 +241,9 @@ if (!AppConstants.RELEASE_OR_BETA)
 // Some add-on types that we track internally are presented as other types
 // externally
 const TYPE_ALIASES = {
-  "webextension": "extension",
   "apiextension": "extension",
+  "webextension": "extension",
+  "webextension-theme": "theme",
 };
 
 const CHROME_TYPES = new Set([
@@ -253,18 +253,20 @@ const CHROME_TYPES = new Set([
 ]);
 
 const RESTARTLESS_TYPES = new Set([
-  "webextension",
+  "apiextension",
   "dictionary",
   "experiment",
   "locale",
-  "apiextension",
+  "webextension",
+  "webextension-theme",
 ]);
 
 const SIGNED_TYPES = new Set([
-  "webextension",
+  "apiextension",
   "extension",
   "experiment",
-  "apiextension",
+  "webextension",
+  "webextension-theme",
 ]);
 
 // This is a random number array that can be used as "salt" when generating
@@ -398,6 +400,31 @@ function findMatchingStaticBlocklistItem(aAddon) {
  */
 function addonMap(addons) {
   return new Map(addons.map(a => [a.id, a]));
+}
+
+/**
+ * Helper function that determines whether an addon of a certain type is a
+ * WebExtension.
+ *
+ * @param  {String} type
+ * @return {Boolean}
+ */
+function isWebExtension(type) {
+  return type == "webextension" || type == "webextension-theme";
+}
+
+var gThemeAliases = null;
+/**
+ * Helper function that determines whether an addon of a certain type is a
+ * theme.
+ *
+ * @param  {String} type
+ * @return {Boolean}
+ */
+function isTheme(type) {
+  if (!gThemeAliases)
+    gThemeAliases = getAllAliasesForTypes(["theme"]);
+  return gThemeAliases.includes(type);
 }
 
 /**
@@ -736,6 +763,9 @@ function isUsableAddon(aAddon) {
 
   if (mustSign(aAddon.type) && !aAddon.isCorrectlySigned) {
     logger.warn(`Add-on ${aAddon.id} is not correctly signed.`);
+    if (Preferences.get(PREF_XPI_SIGNATURES_DEV_ROOT, false)) {
+      logger.warn(`Preference ${PREF_XPI_SIGNATURES_DEV_ROOT} is set.`);
+    }
     return false;
   }
 
@@ -932,7 +962,8 @@ var loadManifestFromWebManifest = Task.async(function*(aUri) {
 
   let extension = new ExtensionData(uri);
 
-  let manifest = yield extension.readManifest();
+  let manifest = yield extension.loadManifest();
+  let theme = !!manifest.theme;
 
   // Read the list of available locales, and pre-load messages for
   // all locales.
@@ -956,7 +987,7 @@ var loadManifestFromWebManifest = Task.async(function*(aUri) {
   let addon = new AddonInternal();
   addon.id = bss.id;
   addon.version = manifest.version;
-  addon.type = "webextension";
+  addon.type = "webextension" + (theme ? "-theme" : "");
   addon.unpack = false;
   addon.strictCompatibility = true;
   addon.bootstrap = true;
@@ -965,6 +996,7 @@ var loadManifestFromWebManifest = Task.async(function*(aUri) {
   addon.internalName = null;
   addon.updateURL = bss.update_url;
   addon.updateKey = null;
+  addon.optionsBrowserStyle = true;
   addon.optionsURL = null;
   addon.optionsType = null;
   addon.aboutURL = null;
@@ -978,6 +1010,12 @@ var loadManifestFromWebManifest = Task.async(function*(aUri) {
       addon.optionsType = AddonManager.OPTIONS_TYPE_TAB;
     else
       addon.optionsType = AddonManager.OPTIONS_TYPE_INLINE_BROWSER;
+
+    if (manifest.options_ui.browser_style === null)
+      logger.warn("Please specify whether you want browser_style " +
+          "or not in your options_ui options.");
+    else
+      addon.optionsBrowserStyle = manifest.options_ui.browser_style;
   }
 
   // WebExtensions don't use iconURLs
@@ -1033,7 +1071,8 @@ var loadManifestFromWebManifest = Task.async(function*(aUri) {
   }];
 
   addon.targetPlatforms = [];
-  addon.userDisabled = false;
+  // Themes are disabled by default, except when they're installed from a web page.
+  addon.userDisabled = theme;
   addon.softDisabled = addon.blocklistState == Blocklist.STATE_SOFTBLOCKED;
 
   return addon;
@@ -1214,11 +1253,12 @@ let loadManifestFromRDF = Task.async(function*(aUri, aStream) {
       addon.bootstrap = true;
     }
 
-    // Only extensions are allowed to provide an optionsURL, optionsType or aboutURL. For
-    // all other types they are silently ignored
-    addon.optionsURL = null;
-    addon.optionsType = null;
+    // Only extensions are allowed to provide an optionsURL, optionsType,
+    // optionsBrowserStyle, or aboutURL. For all other types they are silently ignored
     addon.aboutURL = null;
+    addon.optionsBrowserStyle = null;
+    addon.optionsType = null;
+    addon.optionsURL = null;
 
     if (addon.type == "theme") {
       if (!addon.internalName)
@@ -1295,7 +1335,7 @@ let loadManifestFromRDF = Task.async(function*(aUri, aStream) {
   // A theme's userDisabled value is true if the theme is not the selected skin
   // or if there is an active lightweight theme. We ignore whether softblocking
   // is in effect since it would change the active theme.
-  if (addon.type == "theme") {
+  if (isTheme(addon.type)) {
     addon.userDisabled = !!LightweightThemeManager.currentTheme ||
                          addon.internalName != XPIProvider.selectedSkin;
   } else if (addon.type == "experiment") {
@@ -2972,21 +3012,21 @@ this.XPIProvider = {
    * Applies any pending theme change to the preferences.
    */
   applyThemeChange() {
-    if (!Preferences.get(PREF_DSS_SWITCHPENDING, false))
+    if (!Preferences.get(PREF_SKIN_SWITCHPENDING, false))
       return;
 
     // Tell the Chrome Registry which Skin to select
     try {
-      this.selectedSkin = Preferences.get(PREF_DSS_SKIN_TO_SELECT);
+      this.selectedSkin = Preferences.get(PREF_SKIN_TO_SELECT);
       Services.prefs.setCharPref(PREF_GENERAL_SKINS_SELECTEDSKIN,
                                  this.selectedSkin);
-      Services.prefs.clearUserPref(PREF_DSS_SKIN_TO_SELECT);
+      Services.prefs.clearUserPref(PREF_SKIN_TO_SELECT);
       logger.debug("Changed skin to " + this.selectedSkin);
       this.currentSkin = this.selectedSkin;
     } catch (e) {
       logger.error("Error applying theme change", e);
     }
-    Services.prefs.clearUserPref(PREF_DSS_SWITCHPENDING);
+    Services.prefs.clearUserPref(PREF_SKIN_SWITCHPENDING);
   },
 
   /**
@@ -4032,6 +4072,8 @@ this.XPIProvider = {
     let installReason = BOOTSTRAP_REASONS.ADDON_INSTALL;
     let oldAddon = yield new Promise(
                    resolve => XPIDatabase.getVisibleAddonForID(addon.id, resolve));
+
+    let extraParams = {};
     if (oldAddon) {
       if (!oldAddon.bootstrap) {
         logger.warn("Non-restartless Add-on is already installed", addon.id);
@@ -4048,6 +4090,7 @@ this.XPIProvider = {
         // call its uninstall method
         let newVersion = addon.version;
         let oldVersion = oldAddon.version;
+
         if (Services.vc.compare(newVersion, oldVersion) >= 0) {
           installReason = BOOTSTRAP_REASONS.ADDON_UPGRADE;
         } else {
@@ -4055,22 +4098,27 @@ this.XPIProvider = {
         }
         let uninstallReason = installReason;
 
+        extraParams.newVersion = newVersion;
+        extraParams.oldVersion = oldVersion;
+
         if (oldAddon.active) {
           XPIProvider.callBootstrapMethod(oldAddon, existingAddon,
                                           "shutdown", uninstallReason,
-                                          { newVersion });
+                                          extraParams);
         }
         this.callBootstrapMethod(oldAddon, existingAddon,
-                                 "uninstall", uninstallReason, { newVersion });
+                                 "uninstall", uninstallReason, extraParams);
         this.unloadBootstrapScope(existingAddonID);
         flushChromeCaches();
       }
+    } else {
+      addon.installDate = Date.now();
     }
 
     let file = addon._sourceBundle;
 
     XPIProvider._addURIMapping(addon.id, file);
-    XPIProvider.callBootstrapMethod(addon, file, "install", installReason);
+    XPIProvider.callBootstrapMethod(addon, file, "install", installReason, extraParams);
     addon.state = AddonManager.STATE_INSTALLED;
     logger.debug("Install of temporary addon in " + aFile.path + " completed.");
     addon.visible = true;
@@ -4085,13 +4133,16 @@ this.XPIProvider = {
 
     AddonManagerPrivate.callAddonListeners("onInstalling", addon.wrapper,
                                            false);
-    XPIProvider.callBootstrapMethod(addon, file, "startup",
-                                    BOOTSTRAP_REASONS.ADDON_INSTALL);
+    XPIProvider.callBootstrapMethod(addon, file, "startup", installReason, extraParams);
     AddonManagerPrivate.callInstallListeners("onExternalInstall",
                                              null, addon.wrapper,
                                              oldAddon ? oldAddon.wrapper : null,
                                              false);
     AddonManagerPrivate.callAddonListeners("onInstalled", addon.wrapper);
+
+    // Notify providers that a new theme has been enabled.
+    if (isTheme(addon.type))
+      AddonManagerPrivate.notifyAddonChanged(addon.id, addon.type, false);
 
     return addon.wrapper;
   }),
@@ -4256,7 +4307,7 @@ this.XPIProvider = {
    */
   addonChanged(aId, aType, aPendingRestart) {
     // We only care about themes in this provider
-    if (aType != "theme")
+    if (!isTheme(aType))
       return;
 
     if (!aId) {
@@ -4269,25 +4320,30 @@ this.XPIProvider = {
     // currently selected theme
     let previousTheme = null;
     let newSkin = this.defaultSkin;
-    let addons = XPIDatabase.getAddonsByType("theme");
+    let addons = XPIDatabase.getAddonsByType("theme", "webextension-theme");
     for (let theme of addons) {
       if (!theme.visible)
         return;
-      if (theme.id == aId)
+      let isChangedAddon = (theme.id == aId);
+      if (isWebExtension(theme.type)) {
+        if (!isChangedAddon)
+          this.updateAddonDisabledState(theme, true, undefined, aPendingRestart);
+      } else if (isChangedAddon) {
         newSkin = theme.internalName;
-      else if (theme.userDisabled == false && !theme.pendingUninstall)
+      } else if (theme.userDisabled == false && !theme.pendingUninstall) {
         previousTheme = theme;
+      }
     }
 
     if (aPendingRestart) {
-      Services.prefs.setBoolPref(PREF_DSS_SWITCHPENDING, true);
-      Services.prefs.setCharPref(PREF_DSS_SKIN_TO_SELECT, newSkin);
+      Services.prefs.setBoolPref(PREF_SKIN_SWITCHPENDING, true);
+      Services.prefs.setCharPref(PREF_SKIN_TO_SELECT, newSkin);
     } else if (newSkin == this.currentSkin) {
       try {
-        Services.prefs.clearUserPref(PREF_DSS_SWITCHPENDING);
+        Services.prefs.clearUserPref(PREF_SKIN_SWITCHPENDING);
       } catch (e) { }
       try {
-        Services.prefs.clearUserPref(PREF_DSS_SKIN_TO_SELECT);
+        Services.prefs.clearUserPref(PREF_SKIN_TO_SELECT);
       } catch (e) { }
     } else {
       Services.prefs.setCharPref(PREF_GENERAL_SKINS_SELECTEDSKIN, newSkin);
@@ -4302,7 +4358,7 @@ this.XPIProvider = {
     // Mark the previous theme as disabled. This won't cause recursion since
     // only enabled calls notifyAddonChanged.
     if (previousTheme)
-      this.updateAddonDisabledState(previousTheme, true);
+      this.updateAddonDisabledState(previousTheme, true, undefined, aPendingRestart);
   },
 
   /**
@@ -4367,8 +4423,8 @@ this.XPIProvider = {
         Services.prefs.setCharPref(PREF_GENERAL_SKINS_SELECTEDSKIN,
                                    addon.internalName);
         this.currentSkin = this.selectedSkin = addon.internalName;
-        Preferences.reset(PREF_DSS_SKIN_TO_SELECT);
-        Preferences.reset(PREF_DSS_SWITCHPENDING);
+        Preferences.reset(PREF_SKIN_TO_SELECT);
+        Preferences.reset(PREF_SKIN_SWITCHPENDING);
       } else {
         logger.warn("Attempting to activate an already active default theme");
       }
@@ -4438,8 +4494,9 @@ this.XPIProvider = {
    */
   isBlockingE10s(aAddon) {
     if (aAddon.type != "extension" &&
+        aAddon.type != "theme" &&
         aAddon.type != "webextension" &&
-        aAddon.type != "theme")
+        aAddon.type != "webextension-theme")
       return false;
 
     // The hotfix is exempt
@@ -4511,11 +4568,13 @@ this.XPIProvider = {
     if (aAddon.active)
       return false;
 
-    if (aAddon.type == "theme") {
-      // If dynamic theme switching is enabled then switching themes does not
-      // require a restart
-      if (Preferences.get(PREF_EM_DSS_ENABLED))
-        return false;
+    if (isTheme(aAddon.type)) {
+      if (isWebExtension(aAddon.type)) {
+        // Enabling a WebExtension type theme requires a restart ONLY when the
+        // theme-to-be-disabled requires a restart.
+        let theme = XPIDatabase.getVisibleAddonForInternalName(this.currentSkin);
+        return !theme || this.disableRequiresRestart(theme);
+      }
 
       // If the theme is already the theme in use then no restart is necessary.
       // This covers the case where the default theme is in use but a
@@ -4552,11 +4611,6 @@ this.XPIProvider = {
       return false;
 
     if (aAddon.type == "theme") {
-      // If dynamic theme switching is enabled then switching themes does not
-      // require a restart
-      if (Preferences.get(PREF_EM_DSS_ENABLED))
-        return false;
-
       // Non-default themes always require a restart to disable since it will
       // be switching from one theme to another or to the default theme and a
       // lightweight theme.
@@ -4726,7 +4780,7 @@ this.XPIProvider = {
     let uri = getURIForResourceInFile(aFile, "bootstrap.js").spec;
     if (aType == "dictionary")
       uri = "resource://gre/modules/addons/SpellCheckDictionaryBootstrap.js"
-    else if (aType == "webextension")
+    else if (isWebExtension(aType))
       uri = "resource://gre/modules/addons/WebExtensionBootstrap.js"
     else if (aType == "apiextension")
       uri = "resource://gre/modules/addons/APIExtensionBootstrap.js"
@@ -4940,13 +4994,16 @@ this.XPIProvider = {
    * @param  aSoftDisabled
    *         Value for the softDisabled property. If undefined the value will
    *         not change. If true this will force userDisabled to be true
+   * @param  aPendingRestart
+   *         If the addon is updated whilst the disabled state of another non-
+   *         restartless addon is also set, we need to carry that forward.
    * @return a tri-state indicating the action taken for the add-on:
    *           - undefined: The add-on did not change state
    *           - true: The add-on because disabled
    *           - false: The add-on became enabled
    * @throws if addon is not a DBAddonInternal
    */
-  updateAddonDisabledState(aAddon, aUserDisabled, aSoftDisabled) {
+  updateAddonDisabledState(aAddon, aUserDisabled, aSoftDisabled, aPendingRestart = false) {
     if (!(aAddon.inDatabase))
       throw new Error("Can only update addon states for installed addons.");
     if (aUserDisabled !== undefined && aSoftDisabled !== undefined) {
@@ -5008,7 +5065,7 @@ this.XPIProvider = {
       AddonManagerPrivate.callAddonListeners("onOperationCancelled", wrapper);
     } else {
       if (isDisabled) {
-        var needsRestart = this.disableRequiresRestart(aAddon);
+        var needsRestart = aPendingRestart || this.disableRequiresRestart(aAddon);
         AddonManagerPrivate.callAddonListeners("onDisabling", wrapper,
                                                needsRestart);
       } else {
@@ -5065,7 +5122,7 @@ this.XPIProvider = {
     }
 
     // Notify any other providers that a new theme has been enabled
-    if (aAddon.type == "theme" && !isDisabled)
+    if (isTheme(aAddon.type) && !isDisabled)
       AddonManagerPrivate.notifyAddonChanged(aAddon.id, aAddon.type, needsRestart);
 
     return isDisabled;
@@ -5213,7 +5270,7 @@ this.XPIProvider = {
     }
 
     // Notify any other providers that a new theme has been enabled
-    if (aAddon.type == "theme" && aAddon.active)
+    if (isTheme(aAddon.type) && aAddon.active)
       AddonManagerPrivate.notifyAddonChanged(null, aAddon.type, requiresRestart);
   },
 
@@ -5252,7 +5309,7 @@ this.XPIProvider = {
     }
 
     // Notify any other providers that this theme is now enabled again.
-    if (aAddon.type == "theme" && aAddon.active)
+    if (isTheme(aAddon.type) && aAddon.active)
       AddonManagerPrivate.notifyAddonChanged(aAddon.id, aAddon.type, false);
   }
 };
@@ -5523,10 +5580,10 @@ class AddonInstall {
         if (this.addon.id != this.existingAddon.id) {
           zipreader.close();
           return Promise.reject([AddonManager.ERROR_INCORRECT_ID,
-                                 `Refusing to upgrade addon ${this.existingAddon.id} to different ID {this.addon.id}`]);
+                                 `Refusing to upgrade addon ${this.existingAddon.id} to different ID ${this.addon.id}`]);
         }
 
-        if (this.existingAddon.type == "webextension" && this.addon.type != "webextension") {
+        if (isWebExtension(this.existingAddon.type) && !isWebExtension(this.addon.type)) {
           zipreader.close();
           return Promise.reject([AddonManager.ERROR_UNEXPECTED_ADDON_TYPE,
                                  "WebExtensions may not be upated to other extension types"]);
@@ -5818,6 +5875,10 @@ class AddonInstall {
         }
         XPIProvider.setTelemetry(this.addon.id, "unpacked", installedUnpacked);
         recordAddonTelemetry(this.addon);
+
+        // Notify providers that a new theme has been enabled.
+        if (isTheme(this.addon.type) && this.addon.active)
+          AddonManagerPrivate.notifyAddonChanged(this.addon.id, this.addon.type, requiresRestart);
       }
     }).bind(this)).then(null, (e) => {
       logger.warn(`Failed to install ${this.file.path} from ${this.sourceURI.spec} to ${stagedAddon.path}`, e);
@@ -7209,7 +7270,7 @@ AddonWrapper.prototype = {
   },
 
   get isWebExtension() {
-    return addonFor(this).type == "webextension";
+    return isWebExtension(addonFor(this).type);
   },
 
   get temporarilyInstalled() {
@@ -7277,6 +7338,11 @@ AddonWrapper.prototype = {
     return null;
   },
 
+  get optionsBrowserStyle() {
+    let addon = addonFor(this);
+    return addon.optionsBrowserStyle;
+  },
+
   get iconURL() {
     return AddonManager.getPreferredIconURL(this, 48);
   },
@@ -7333,7 +7399,7 @@ AddonWrapper.prototype = {
         return repositoryScreenshots;
     }
 
-    if (addon.type == "theme" && this.hasResource("preview.png")) {
+    if (isTheme(addon.type) && this.hasResource("preview.png")) {
       let url = this.getResourceURI("preview.png").spec;
       return [new AddonManagerPrivate.AddonScreenshot(url)];
     }
@@ -7473,11 +7539,13 @@ AddonWrapper.prototype = {
     }
 
     if (addon.inDatabase) {
-      if (addon.type == "theme" && val) {
+      let theme = isTheme(addon.type);
+      if (theme && val) {
         if (addon.internalName == XPIProvider.defaultSkin)
           throw new Error("Cannot disable the default theme");
         XPIProvider.enableDefaultTheme();
-      } else {
+      }
+      if (!(theme && val) || isWebExtension(addon.type)) {
         // hidden and system add-ons should not be user disasbled,
         // as there is no UI to re-enable them.
         if (this.hidden) {
@@ -7502,10 +7570,12 @@ AddonWrapper.prototype = {
 
     if (addon.inDatabase) {
       // When softDisabling a theme just enable the active theme
-      if (addon.type == "theme" && val && !addon.userDisabled) {
+      if (isTheme(addon.type) && val && !addon.userDisabled) {
         if (addon.internalName == XPIProvider.defaultSkin)
           throw new Error("Cannot disable the default theme");
         XPIProvider.enableDefaultTheme();
+        if (isWebExtension(addon.type))
+          XPIProvider.updateAddonDisabledState(addon, undefined, val);
       } else {
         XPIProvider.updateAddonDisabledState(addon, undefined, val);
       }
@@ -7903,9 +7973,9 @@ function DirectoryInstallLocation(aName, aDirectory, aScope) {
 }
 
 DirectoryInstallLocation.prototype = {
-  _name       : "",
-  _directory   : null,
-  _IDToFileMap : null,  // mapping from add-on ID to nsIFile
+  _name: "",
+  _directory: null,
+  _IDToFileMap: null,  // mapping from add-on ID to nsIFile
 
   /**
    * Reads a directory linked to in a file.
@@ -8590,15 +8660,21 @@ Object.assign(SystemAddonInstallLocation.prototype, {
    * Resets the add-on set so on the next startup the default set will be used.
    */
   resetAddonSet() {
+    logger.info("Removing all system add-on upgrades.");
 
+    // remove everything from the pref first, if uninstall
+    // fails then at least they will not be re-activated on
+    // next restart.
+    this._saveAddonSet({ schema: 1, addons: {} });
+
+    // If this is running at app startup, the pref being cleared
+    // will cause later stages of startup to notice that the
+    // old updates are now gone.
+    //
+    // Updates will only be explicitly uninstalled if they are
+    // removed restartlessly, for instance if they are no longer
+    // part of the latest update set.
     if (this._addonSet) {
-      logger.info("Removing all system add-on upgrades.");
-
-      // remove everything from the pref first, if uninstall
-      // fails then at least they will not be re-activated on
-      // next restart.
-      this._saveAddonSet({ schema: 1, addons: {} });
-
       for (let id of Object.keys(this._addonSet.addons)) {
         AddonManager.getAddonByID(id, addon => {
           if (addon) {
@@ -8916,10 +8992,10 @@ function WinRegInstallLocation(aName, aRootKey, aScope) {
 }
 
 WinRegInstallLocation.prototype = {
-  _name       : "",
-  _rootKey    : null,
-  _scope      : null,
-  _IDToFileMap : null,  // mapping from ID to nsIFile
+  _name: "",
+  _rootKey: null,
+  _scope: null,
+  _IDToFileMap: null,  // mapping from ID to nsIFile
 
   /**
    * Retrieves the path of this Application's data key in the registry.

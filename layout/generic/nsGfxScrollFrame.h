@@ -461,6 +461,10 @@ public:
 
   bool DragScroll(WidgetEvent* aEvent);
 
+  void AsyncScrollbarDragRejected();
+
+  bool IsRootScrollFrameOfDocument() const { return mIsRoot; }
+
   // owning references to the nsIAnonymousContentCreator-built content
   nsCOMPtr<nsIContent> mHScrollbarContent;
   nsCOMPtr<nsIContent> mVScrollbarContent;
@@ -673,14 +677,6 @@ public:
 
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
-
-  virtual mozilla::WritingMode GetWritingMode() const override
-  {
-    if (mHelper.mScrolledFrame) {
-      return mHelper.mScrolledFrame->GetWritingMode();
-    }
-    return nsIFrame::GetWritingMode();
-  }
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -1037,6 +1033,22 @@ public:
 
   virtual bool DragScroll(mozilla::WidgetEvent* aEvent) override {
     return mHelper.DragScroll(aEvent);
+  }
+
+  virtual void AsyncScrollbarDragRejected() override {
+    return mHelper.AsyncScrollbarDragRejected();
+  }
+
+  virtual bool IsRootScrollFrameOfDocument() const override {
+    return mHelper.IsRootScrollFrameOfDocument();
+  }
+
+  // Update the style on our scrolled frame.
+  virtual void DoUpdateStyleOfOwnedAnonBoxes(mozilla::ServoStyleSet& aStyleSet,
+                                             nsStyleChangeList& aChangeList,
+                                             nsChangeHint aHintForThisFrame) override {
+    UpdateStyleOfChildAnonBox(mHelper.GetScrolledFrame(), aStyleSet,
+                              aChangeList, aHintForThisFrame);
   }
 
 #ifdef DEBUG_FRAME_DUMP
@@ -1467,6 +1479,21 @@ public:
 
   virtual bool DragScroll(mozilla::WidgetEvent* aEvent) override {
     return mHelper.DragScroll(aEvent);
+  }
+
+  virtual void AsyncScrollbarDragRejected() override {
+    return mHelper.AsyncScrollbarDragRejected();
+  }
+
+  virtual bool IsRootScrollFrameOfDocument() const override {
+    return mHelper.IsRootScrollFrameOfDocument();
+  }
+
+  virtual void DoUpdateStyleOfOwnedAnonBoxes(mozilla::ServoStyleSet& aStyleSet,
+                                             nsStyleChangeList& aChangeList,
+                                             nsChangeHint aHintForThisFrame) override {
+    UpdateStyleOfChildAnonBox(mHelper.GetScrolledFrame(), aStyleSet,
+                              aChangeList, aHintForThisFrame);
   }
 
 #ifdef DEBUG_FRAME_DUMP

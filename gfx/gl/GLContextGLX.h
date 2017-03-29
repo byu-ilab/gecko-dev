@@ -21,20 +21,19 @@ public:
     static already_AddRefed<GLContextGLX>
     CreateGLContext(CreateContextFlags flags,
                     const SurfaceCaps& caps,
-                    GLContextGLX* shareContext,
                     bool isOffscreen,
                     Display* display,
                     GLXDrawable drawable,
                     GLXFBConfig cfg,
                     bool deleteDrawable,
-                    gfxXlibSurface* pixmap = nullptr,
-                    ContextProfile profile = ContextProfile::OpenGLCompatibility);
+                    gfxXlibSurface* pixmap);
 
     // Finds a GLXFBConfig compatible with the provided window.
     static bool
     FindFBConfigForWindow(Display* display, int screen, Window window,
                           ScopedXFree<GLXFBConfig>* const out_scopedConfigArr,
-                          GLXFBConfig* const out_config, int* const out_visid);
+                          GLXFBConfig* const out_config, int* const out_visid,
+                          bool aWebRender);
 
     ~GLContextGLX();
 
@@ -55,8 +54,6 @@ public:
 
     virtual bool IsDoubleBuffered() const override;
 
-    virtual bool SupportsRobustness() const override;
-
     virtual bool SwapBuffers() override;
 
     virtual void GetWSIInfo(nsCString* const out) const override;
@@ -73,15 +70,13 @@ private:
 
     GLContextGLX(CreateContextFlags flags,
                  const SurfaceCaps& caps,
-                 GLContext* shareContext,
                  bool isOffscreen,
                  Display* aDisplay,
                  GLXDrawable aDrawable,
                  GLXContext aContext,
                  bool aDeleteDrawable,
                  bool aDoubleBuffered,
-                 gfxXlibSurface* aPixmap,
-                 ContextProfile profile);
+                 gfxXlibSurface* aPixmap);
 
     GLXContext mContext;
     Display* mDisplay;

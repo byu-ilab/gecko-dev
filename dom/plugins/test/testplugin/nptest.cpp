@@ -149,6 +149,7 @@ static bool getClipboardText(NPObject* npobj, const NPVariant* args, uint32_t ar
 static bool callOnDestroy(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool reinitWidget(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool crashPluginInNestedLoop(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
+static bool triggerXError(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool destroySharedGfxStuff(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool propertyAndMethod(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool getTopLevelWindowActivationState(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
@@ -222,6 +223,7 @@ static const NPUTF8* sPluginMethodIdentifierNames[] = {
   "callOnDestroy",
   "reinitWidget",
   "crashInNestedLoop",
+  "triggerXError",
   "destroySharedGfxStuff",
   "propertyAndMethod",
   "getTopLevelWindowActivationState",
@@ -296,6 +298,7 @@ static const ScriptableFunction sPluginMethodFunctions[] = {
   callOnDestroy,
   reinitWidget,
   crashPluginInNestedLoop,
+  triggerXError,
   destroySharedGfxStuff,
   propertyAndMethod,
   getTopLevelWindowActivationState,
@@ -873,12 +876,6 @@ NPP_New(NPMIMEType pluginType, NPP instance, uint16_t mode, int16_t argc, char* 
 
   instanceData->instanceCountWatchGeneration = sCurrentInstanceCountWatchGeneration;
 
-  if (NP_FULL == mode) {
-    instanceData->streamMode = NP_SEEK;
-    instanceData->frame = "testframe";
-    addRange(instanceData, "100,100");
-  }
-
   AsyncDrawing requestAsyncDrawing = AD_NONE;
 
   bool requestWindow = false;
@@ -1012,7 +1009,16 @@ NPP_New(NPMIMEType pluginType, NPP instance, uint16_t mode, int16_t argc, char* 
     if (strcmp(argn[i], "salign") == 0) {
       alreadyHasSalign = true;
     }
-}
+
+    // We don't support NP_FULL any more, but name="plugin" is an indication
+    // that we're a full-page plugin. We use default seek parameters for
+    // test_fullpage.html
+    if (strcmp(argn[i], "name") == 0 && strcmp(argv[i], "plugin") == 0) {
+      instanceData->streamMode = NP_SEEK;
+      instanceData->frame = "testframe";
+      addRange(instanceData, "100,100");
+    }
+  }
 
   if (!browserSupportsWindowless || !pluginSupportsWindowlessMode()) {
     requestWindow = true;
@@ -3363,6 +3369,15 @@ crashPluginInNestedLoop(NPObject* npobj, const NPVariant* args,
 }
 
 bool
+triggerXError(NPObject* npobj, const NPVariant* args,
+              uint32_t argCount, NPVariant* result)
+{
+  NPP npp = static_cast<TestNPObject*>(npobj)->npp;
+  InstanceData* id = static_cast<InstanceData*>(npp->pdata);
+  return pluginTriggerXError(id);
+}
+
+bool
 destroySharedGfxStuff(NPObject* npobj, const NPVariant* args,
                         uint32_t argCount, NPVariant* result)
 {
@@ -3383,6 +3398,14 @@ getClipboardText(NPObject* npobj, const NPVariant* args, uint32_t argCount,
 bool
 crashPluginInNestedLoop(NPObject* npobj, const NPVariant* args,
                         uint32_t argCount, NPVariant* result)
+{
+  // XXX Not implemented!
+  return false;
+}
+
+bool
+triggerXError(NPObject* npobj, const NPVariant* args,
+              uint32_t argCount, NPVariant* result)
 {
   // XXX Not implemented!
   return false;

@@ -157,7 +157,7 @@
 
 #PanelUI-menu-button[badge-status="addon-alert"] > .toolbarbutton-badge-stack > .toolbarbutton-badge {
   height: 13px;
-  background: transparent url(chrome://browser/skin/addons/addon-badge.svg) no-repeat center;
+  background: #FFBF00 url(chrome://browser/skin/update-badge-failed.svg) no-repeat center;
 }
 
 .panel-subviews {
@@ -589,12 +589,22 @@ toolbarpaletteitem[place="palette"] > toolbaritem > toolbarbutton {
 }
 
 #PanelUI-footer-addons > toolbarbutton {
-  background-color: #C7F5FF;
+  background-color: #FFEFBF;
+  /* Force border to override `#PanelUI-footer-addons > toolbarbutton` selector below */
+  border-top: 1px solid hsl(45, 100%, 77%) !important;
   display: flex;
   flex: 1 1 0%;
   width: calc(@menuPanelWidth@ + 30px);
   padding-inline-start: 15px;
   border-inline-start-style: none;
+}
+
+#PanelUI-footer-addons > toolbarbutton:hover {
+  background-color: #FFE8A2;
+}
+
+#PanelUI-footer-addons > toolbarbutton:active {
+  background-color: #FFE38F;
 }
 
 #PanelUI-footer-addons > toolbarbutton > .toolbarbutton-icon {
@@ -603,7 +613,7 @@ toolbarpaletteitem[place="palette"] > toolbaritem > toolbarbutton {
 }
 
 #PanelUI-footer-addons > toolbarbutton::after {
-  background-image: url(chrome://browser/skin/addons/addon-badge.svg);
+  background: #FFBF00 url(chrome://browser/skin/update-badge-failed.svg) no-repeat center;
 }
 
 #PanelUI-fxa-status {
@@ -793,9 +803,13 @@ toolbarpaletteitem[place="palette"] > toolbaritem > toolbarbutton {
   margin-left: 28px;
 }
 
+#PanelUI-remotetabs[mainview] .PanelUI-remotetabs-notabsforclient-label {
+  margin-left: 32px;
+}
+
 .fxaSyncIllustration {
+  width: 180px;
   height: var(--panel-ui-sync-illustration-height);
-  list-style-image: url(chrome://browser/skin/fxa/sync-illustration.svg);
 }
 
 .PanelUI-remotetabs-prefs-button > .toolbarbutton-text {
@@ -1236,19 +1250,19 @@ menuitem.panel-subview-footer@menuStateActive@,
   color: GrayText;
 }
 
-#PanelUI-remotetabs-tabslist > toolbarbutton,
+#PanelUI-remotetabs-tabslist > toolbarbutton[itemtype="tab"],
 #PanelUI-historyItems > toolbarbutton {
   list-style-image: url("chrome://mozapps/skin/places/defaultFavicon.png");
 }
 
 @media (min-resolution: 1.1dppx) {
-  #PanelUI-remotetabs-tabslist > toolbarbutton,
+  #PanelUI-remotetabs-tabslist > toolbarbutton[itemtype="tab"],
   #PanelUI-historyItems > toolbarbutton {
     list-style-image: url("chrome://mozapps/skin/places/defaultFavicon@2x.png");
   }
 }
 
-#PanelUI-remotetabs-tabslist > toolbarbutton > .toolbarbutton-icon,
+#PanelUI-remotetabs-tabslist > toolbarbutton[itemtype="tab"] > .toolbarbutton-icon,
 #PanelUI-recentlyClosedWindows > toolbarbutton > .toolbarbutton-icon,
 #PanelUI-recentlyClosedTabs > toolbarbutton > .toolbarbutton-icon,
 #PanelUI-historyItems > toolbarbutton > .toolbarbutton-icon {

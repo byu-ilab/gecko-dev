@@ -8,14 +8,16 @@
 
 #include "HTMLSplitOnSpacesTokenizer.h"
 #include "js/Value.h"
-#include "mozilla/dom/File.h"
+#include "mozilla/dom/FileBlobImpl.h"
 #include "mozilla/dom/FileSystemBase.h"
 #include "mozilla/dom/FileSystemUtils.h"
 #include "mozilla/dom/PFileSystemParams.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/dom/UnionTypes.h"
 #include "mozilla/dom/ipc/BlobChild.h"
 #include "mozilla/dom/ipc/BlobParent.h"
 #include "nsIFile.h"
+#include "nsISimpleEnumerator.h"
 #include "nsStringGlue.h"
 
 namespace mozilla {
@@ -176,12 +178,6 @@ GetDirectoryListingTaskChild::HandlerCallback()
   mPromise = nullptr;
 }
 
-void
-GetDirectoryListingTaskChild::GetPermissionAccessType(nsCString& aAccess) const
-{
-  aAccess.AssignLiteral(DIRECTORY_READ_PERMISSION);
-}
-
 /**
  * GetDirectoryListingTaskParent
  */
@@ -239,7 +235,7 @@ GetDirectoryListingTaskParent::GetSuccessRequestResult(ErrorResult& aRv) const
       }
 
       FileSystemDirectoryListingResponseFile fileData;
-      RefPtr<BlobImpl> blobImpl = new BlobImplFile(path);
+      RefPtr<BlobImpl> blobImpl = new FileBlobImpl(path);
 
       nsAutoString filePath;
       filePath.Assign(mDOMPath);
@@ -252,7 +248,7 @@ GetDirectoryListingTaskParent::GetSuccessRequestResult(ErrorResult& aRv) const
       nsAutoString name;
       blobImpl->GetName(name);
       filePath.Append(name);
-      blobImpl->SetPath(filePath);
+      blobImpl->SetDOMPath(filePath);
 
       fileData.blobParent() =
         BlobParent::GetOrCreate(mRequestParent->Manager(), blobImpl);
@@ -384,10 +380,10 @@ GetDirectoryListingTaskParent::IOWork()
   return NS_OK;
 }
 
-void
-GetDirectoryListingTaskParent::GetPermissionAccessType(nsCString& aAccess) const
+nsresult
+GetDirectoryListingTaskParent::GetTargetPath(nsAString& aPath) const
 {
-  aAccess.AssignLiteral(DIRECTORY_READ_PERMISSION);
+  return mTargetPath->GetPath(aPath);
 }
 
 } // namespace dom

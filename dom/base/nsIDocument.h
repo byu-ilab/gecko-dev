@@ -15,6 +15,7 @@
 #include "nsIDocumentObserver.h"         // for typedef (nsUpdateType)
 #include "nsILoadGroup.h"                // for member (in nsCOMPtr)
 #include "nsINode.h"                     // for base class
+#include "nsIParser.h"
 #include "nsIScriptGlobalObject.h"       // for member (in nsCOMPtr)
 #include "nsIServiceManager.h"
 #include "nsIUUIDGenerator.h"
@@ -32,7 +33,7 @@
 #include "nsClassHashtable.h"
 #include "prclist.h"
 #include "mozilla/CORSMode.h"
-#include "mozilla/dom/Dispatcher.h"
+#include "mozilla/dom/DispatcherTrait.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/StyleBackendType.h"
 #include "mozilla/StyleSheet.h"
@@ -93,6 +94,7 @@ class nsPresContext;
 class nsRange;
 class nsScriptLoader;
 class nsSMILAnimationController;
+class nsSVGElement;
 class nsTextNode;
 class nsWindowSizes;
 class nsDOMCaretPosition;
@@ -107,7 +109,6 @@ class ErrorResult;
 class EventStates;
 class PendingAnimationTracker;
 class StyleSetHandle;
-class SVGAttrAnimationRuleProcessor;
 template<typename> class OwningNonNull;
 
 namespace css {
@@ -357,6 +358,8 @@ public:
    * Set referrer policy and upgrade-insecure-requests flags
    */
   virtual void ApplySettingsFromCSP(bool aSpeculative) = 0;
+
+  virtual already_AddRefed<nsIParser> CreatorParserOrNull() = 0;
 
   /**
    * Return the referrer policy of the document. Return "default" if there's no
@@ -629,6 +632,15 @@ public:
     mIsInitialDocumentInWindow = aIsInitialDocument;
   }
 
+  /**
+   * Normally we assert if a runnable labeled with one DocGroup touches data
+   * from another DocGroup. Calling IgnoreDocGroupMismatches() on a document
+   * means that we can touch that document from any DocGroup without asserting.
+   */
+  void IgnoreDocGroupMismatches()
+  {
+    mIgnoreDocGroupMismatches = true;
+  }
 
   /**
    * Get the bidi options for this document.
@@ -876,12 +888,15 @@ public:
   void SetParentDocument(nsIDocument* aParent)
   {
     mParentDocument = aParent;
+    if (aParent) {
+      mIgnoreDocGroupMismatches = aParent->mIgnoreDocGroupMismatches;
+    }
   }
 
   /**
    * Are plugins allowed in this document ?
    */
-  virtual nsresult GetAllowPlugins (bool* aAllowPlugins) = 0;
+  virtual bool GetAllowPlugins () = 0;
 
   /**
    * Set the sub document for aContent to aSubDoc.
@@ -996,6 +1011,20 @@ public:
   }
 
   virtual void NotifyLayerManagerRecreated() = 0;
+
+  /**
+   * Add an SVG element to the list of elements that need
+   * their mapped attributes resolved to a Servo declaration block.
+   *
+   * These are weak pointers, please manually unschedule them when an element
+   * is removed.
+   */
+  virtual void ScheduleSVGForPresAttrEvaluation(nsSVGElement* aSVG) = 0;
+  // Unschedule an element scheduled by ScheduleFrameRequestCallback (e.g. for when it is destroyed)
+  virtual void UnscheduleSVGForPresAttrEvaluation(nsSVGElement* aSVG) = 0;
+
+  // Resolve all SVG pres attrs scheduled in ScheduleSVGForPresAttrEvaluation
+  virtual void ResolveScheduledSVGPresAttrs() = 0;
 
 protected:
   virtual Element *GetRootElementInternal() const = 0;
@@ -1250,16 +1279,6 @@ public:
    */
   nsHTMLCSSStyleSheet* GetInlineStyleSheet() const {
     return mStyleAttrStyleSheet;
-  }
-
-  /**
-   * Get this document's SVG Animation rule processor.  May return null
-   * if there isn't one.
-   */
-  mozilla::SVGAttrAnimationRuleProcessor*
-  GetSVGAttrAnimationRuleProcessor() const
-  {
-    return mSVGAttrAnimationRuleProcessor;
   }
 
   virtual void SetScriptGlobalObject(nsIScriptGlobalObject* aGlobalObject) = 0;
@@ -1950,7 +1969,7 @@ public:
     return mMayStartLayout;
   }
 
-  void SetMayStartLayout(bool aMayStartLayout)
+  virtual void SetMayStartLayout(bool aMayStartLayout)
   {
     mMayStartLayout = aMayStartLayout;
   }
@@ -2146,31 +2165,20 @@ public:
   virtual mozilla::PendingAnimationTracker*
   GetOrCreatePendingAnimationTracker() = 0;
 
-  enum SuppressionType {
-    eAnimationsOnly = 0x1,
-
-    // Note that suppressing events also suppresses animation frames, so
-    // there's no need to split out events in its own bitmask.
-    eEvents = 0x3,
-  };
-
   /**
    * Prevents user initiated events from being dispatched to the document and
    * subdocuments.
    */
-  virtual void SuppressEventHandling(SuppressionType aWhat,
-                                     uint32_t aIncrease = 1) = 0;
+  virtual void SuppressEventHandling(uint32_t aIncrease = 1) = 0;
 
   /**
    * Unsuppress event handling.
    * @param aFireEvents If true, delayed events (focus/blur) will be fired
    *                    asynchronously.
    */
-  virtual void UnsuppressEventHandlingAndFireEvents(SuppressionType aWhat,
-                                                    bool aFireEvents) = 0;
+  virtual void UnsuppressEventHandlingAndFireEvents(bool aFireEvents) = 0;
 
   uint32_t EventHandlingSuppressed() const { return mEventsSuppressed; }
-  uint32_t AnimationsPaused() const { return mAnimationsPaused; }
 
   bool IsEventHandlingEnabled() {
     return !EventHandlingSuppressed() && mScriptGlobalObject;
@@ -2362,6 +2370,7 @@ public:
    * nsIDocument.h.
    */
   virtual mozilla::EventStates GetDocumentState() = 0;
+  virtual mozilla::EventStates ThreadSafeGetDocumentState() const = 0;
 
   virtual nsISupports* GetCurrentContentSink() = 0;
 
@@ -2432,6 +2441,9 @@ public:
   virtual void RemoveResponsiveContent(nsIContent* aContent) = 0;
   virtual void NotifyMediaFeatureValuesChanged() = 0;
 
+  virtual void AddMediaContent(nsIContent* aContent) = 0;
+  virtual void RemoveMediaContent(nsIContent* aContent) = 0;
+
   virtual nsresult GetStateObject(nsIVariant** aResult) = 0;
 
   virtual nsDOMNavigationTiming* GetNavigationTiming() const = 0;
@@ -2476,20 +2488,6 @@ public:
   virtual void PostVisibilityUpdateEvent() = 0;
 
   bool IsSyntheticDocument() const { return mIsSyntheticDocument; }
-
-  void SetNeedLayoutFlush() {
-    mNeedLayoutFlush = true;
-    if (mDisplayDocument) {
-      mDisplayDocument->SetNeedLayoutFlush();
-    }
-  }
-
-  void SetNeedStyleFlush() {
-    mNeedStyleFlush = true;
-    if (mDisplayDocument) {
-      mDisplayDocument->SetNeedStyleFlush();
-    }
-  }
 
   // Note: nsIDocument is a sub-class of nsINode, which has a
   // SizeOfExcludingThis function.  However, because nsIDocument objects can
@@ -2610,7 +2608,7 @@ public:
   virtual already_AddRefed<Element>
     CreateElementNS(const nsAString& aNamespaceURI,
                     const nsAString& aQualifiedName,
-                    const mozilla::dom::ElementCreationOptions& aOptions,
+                    const mozilla::dom::ElementCreationOptionsOrString& aOptions,
                     mozilla::ErrorResult& rv) = 0;
   already_AddRefed<mozilla::dom::DocumentFragment>
     CreateDocumentFragment() const;
@@ -2669,6 +2667,8 @@ public:
   }
   Element* GetActiveElement();
   bool HasFocus(mozilla::ErrorResult& rv) const;
+  mozilla::TimeStamp LastFocusTime() const;
+  void SetLastFocusTime(const mozilla::TimeStamp& aFocusTime);
   // Event handlers are all on nsINode already
   bool MozSyntheticDocument() const
   {
@@ -2777,6 +2777,9 @@ public:
 
   void ObsoleteSheet(const nsAString& aSheetURI, mozilla::ErrorResult& rv);
 
+  already_AddRefed<mozilla::dom::Promise> BlockParsing(mozilla::dom::Promise& aPromise,
+                                                       mozilla::ErrorResult& aRv);
+
   already_AddRefed<nsIURI> GetMozDocumentURIIfNotForErrorPages();
 
   // ParentNode
@@ -2869,7 +2872,7 @@ public:
     mozilla::dom::DOMIntersectionObserver* aObserver) = 0;
   virtual void RemoveIntersectionObserver(
     mozilla::dom::DOMIntersectionObserver* aObserver) = 0;
-  
+
   virtual void UpdateIntersectionObservations() = 0;
   virtual void ScheduleIntersectionObserverNotification() = 0;
   virtual void NotifyIntersectionObservers() = 0;
@@ -2895,14 +2898,8 @@ public:
 
   // For more information on Flash classification, see
   // toolkit/components/url-classifier/flash-block-lists.rst
-  enum class FlashClassification {
-    Unclassified,   // Denotes a classification that has not yet been computed.
-                    // Allows for lazy classification.
-    Unknown,        // Site is not on the whitelist or blacklist
-    Allowed,        // Site is on the Flash whitelist
-    Denied          // Site is on the Flash blacklist
-  };
-  virtual FlashClassification DocumentFlashClassification() = 0;
+  virtual mozilla::dom::FlashClassification DocumentFlashClassification() = 0;
+  virtual bool IsThirdParty() = 0;
 
 protected:
   bool GetUseCounter(mozilla::UseCounter aUseCounter)
@@ -3015,7 +3012,6 @@ protected:
   RefPtr<mozilla::css::ImageLoader> mStyleImageLoader;
   RefPtr<nsHTMLStyleSheet> mAttrStyleSheet;
   RefPtr<nsHTMLCSSStyleSheet> mStyleAttrStyleSheet;
-  RefPtr<mozilla::SVGAttrAnimationRuleProcessor> mSVGAttrAnimationRuleProcessor;
 
   // Tracking for images in the document.
   RefPtr<mozilla::dom::ImageTracker> mImageTracker;
@@ -3045,12 +3041,9 @@ protected:
   // container for per-context fonts (downloadable, SVG, etc.)
   RefPtr<mozilla::dom::FontFaceSet> mFontFaceSet;
 
-  // XXXheycam rust-bindgen currently doesn't generate correctly aligned fields
-  // to represent the following bitfields if they are preceded by something
-  // non-pointer aligned, so if adding non-pointer sized fields, please do so
-  // somewhere other than right here.
-  //
-  // https://github.com/servo/rust-bindgen/issues/111
+  // Last time this document or a one of its sub-documents was focused.  If
+  // focus has never occurred then mLastFocusTime.IsNull() will be true.
+  mozilla::TimeStamp mLastFocusTime;
 
   // True if BIDI is enabled.
   bool mBidiEnabled : 1;
@@ -3062,6 +3055,8 @@ protected:
   // documents created to satisfy a GetDocument() on a window when there's no
   // document in it.
   bool mIsInitialDocumentInWindow : 1;
+
+  bool mIgnoreDocGroupMismatches : 1;
 
   // True if we're loaded as data and therefor has any dangerous stuff, such
   // as scripts and plugins, disabled.
@@ -3123,12 +3118,6 @@ protected:
 
   // True if this document has links whose state needs updating
   bool mHasLinksToUpdate : 1;
-
-  // True if a layout flush might not be a no-op
-  bool mNeedLayoutFlush : 1;
-
-  // True if a style flush might not be a no-op
-  bool mNeedStyleFlush : 1;
 
   // True if a DOMMutationObserver is perhaps attached to a node in the document.
   bool mMayHaveDOMMutationObservers : 1;
@@ -3301,8 +3290,6 @@ protected:
   nsCOMPtr<nsIDocument> mDisplayDocument;
 
   uint32_t mEventsSuppressed;
-
-  uint32_t mAnimationsPaused;
 
   /**
    * The number number of external scripts (ones with the src attribute) that

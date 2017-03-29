@@ -26,6 +26,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/ContentCache.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/TextEventDispatcherListener.h"
 
 namespace mozilla {
 
@@ -183,6 +184,10 @@ public:
   virtual InputContext GetInputContext() override;
   virtual NativeIMEContext GetNativeIMEContext() override;
   virtual nsIMEUpdatePreference GetIMEUpdatePreference() override;
+  TextEventDispatcherListener* GetNativeTextEventDispatcherListener() override
+  { return mNativeTextEventDispatcherListener; }
+  void SetNativeTextEventDispatcherListener(TextEventDispatcherListener* aListener)
+  { mNativeTextEventDispatcherListener = aListener; }
 
   virtual void SetCursor(nsCursor aCursor) override;
   virtual nsresult SetCursor(imgIContainer* aCursor,
@@ -315,7 +320,8 @@ private:
   class PaintTask : public Runnable {
   public:
     NS_DECL_NSIRUNNABLE
-    explicit PaintTask(PuppetWidget* widget) : mWidget(widget) {}
+    explicit PaintTask(PuppetWidget* widget)
+     : Runnable("PuppetWidget::PaintTask"), mWidget(widget) {}
     void Revoke() { mWidget = nullptr; }
   private:
     PuppetWidget* mWidget;
@@ -374,6 +380,8 @@ private:
   uint32_t mCursorHotspotX, mCursorHotspotY;
 
   nsCOMArray<nsIKeyEventInPluginCallback> mKeyEventInPluginCallbacks;
+
+  RefPtr<TextEventDispatcherListener> mNativeTextEventDispatcherListener;
 
 protected:
   bool mEnabled;

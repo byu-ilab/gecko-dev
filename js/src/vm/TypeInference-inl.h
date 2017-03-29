@@ -330,6 +330,9 @@ struct AutoEnterAnalysis
 
   private:
     void init(FreeOp* fop, Zone* zone) {
+#ifdef JS_CRASH_DIAGNOSTICS
+        MOZ_RELEASE_ASSERT(CurrentThreadCanAccessZone(zone));
+#endif
         this->freeOp = fop;
         this->zone = zone;
 
@@ -363,8 +366,8 @@ TypeMonitorCall(JSContext* cx, const js::CallArgs& args, bool constructing)
     }
 }
 
-inline bool
-TrackPropertyTypes(JSContext* cx, JSObject* obj, jsid id)
+MOZ_ALWAYS_INLINE bool
+TrackPropertyTypes(JSObject* obj, jsid id)
 {
     if (obj->hasLazyGroup() || obj->group()->unknownProperties())
         return false;
@@ -401,22 +404,26 @@ PropertyHasBeenMarkedNonConstant(JSObject* obj, jsid id)
     return types->nonConstantProperty();
 }
 
-inline bool
+MOZ_ALWAYS_INLINE bool
 HasTypePropertyId(JSObject* obj, jsid id, TypeSet::Type type)
 {
-    if (obj->hasLazyGroup())
+    id = IdToTypeId(id);
+    if (!TrackPropertyTypes(obj, id))
         return true;
 
-    if (obj->group()->unknownProperties())
+    if (HeapTypeSet* types = obj->group()->maybeGetProperty(id)) {
+        if (!types->hasType(type))
+            return false;
+        // Non-constant properties are only relevant for singleton objects.
+        if (obj->isSingleton() && !types->nonConstantProperty())
+            return false;
         return true;
-
-    if (HeapTypeSet* types = obj->group()->maybeGetProperty(IdToTypeId(id)))
-        return types->hasType(type);
+    }
 
     return false;
 }
 
-inline bool
+MOZ_ALWAYS_INLINE bool
 HasTypePropertyId(JSObject* obj, jsid id, const Value& value)
 {
     return HasTypePropertyId(obj, id, TypeSet::GetValueType(value));
@@ -430,7 +437,7 @@ inline void
 AddTypePropertyId(JSContext* cx, JSObject* obj, jsid id, TypeSet::Type type)
 {
     id = IdToTypeId(id);
-    if (TrackPropertyTypes(cx, obj, id))
+    if (TrackPropertyTypes(obj, id))
         AddTypePropertyId(cx, obj->group(), obj, id, type);
 }
 
@@ -438,7 +445,7 @@ inline void
 AddTypePropertyId(JSContext* cx, JSObject* obj, jsid id, const Value& value)
 {
     id = IdToTypeId(id);
-    if (TrackPropertyTypes(cx, obj, id))
+    if (TrackPropertyTypes(obj, id))
         AddTypePropertyId(cx, obj->group(), obj, id, value);
 }
 
@@ -460,7 +467,7 @@ inline void
 MarkTypePropertyNonData(JSContext* cx, JSObject* obj, jsid id)
 {
     id = IdToTypeId(id);
-    if (TrackPropertyTypes(cx, obj, id))
+    if (TrackPropertyTypes(obj, id))
         obj->group()->markPropertyNonData(cx, obj, id);
 }
 
@@ -468,7 +475,7 @@ inline void
 MarkTypePropertyNonWritable(JSContext* cx, JSObject* obj, jsid id)
 {
     id = IdToTypeId(id);
-    if (TrackPropertyTypes(cx, obj, id))
+    if (TrackPropertyTypes(obj, id))
         obj->group()->markPropertyNonWritable(cx, obj, id);
 }
 
@@ -906,7 +913,7 @@ TypeSet::Type::maybeCompartment()
     return nullptr;
 }
 
-inline bool
+MOZ_ALWAYS_INLINE bool
 TypeSet::hasType(Type type) const
 {
     if (unknown())

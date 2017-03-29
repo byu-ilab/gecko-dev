@@ -89,7 +89,6 @@ using mozilla::DefaultXDisplay;
 #endif
 
 #include "mozilla/dom/TabChild.h"
-#include "ClientLayerManager.h"
 
 #ifdef CreateEvent // Thank you MS.
 #undef CreateEvent
@@ -151,6 +150,7 @@ protected:
 nsPluginFrame::nsPluginFrame(nsStyleContext* aContext)
   : nsFrame(aContext)
   , mInstanceOwner(nullptr)
+  , mOuterView(nullptr)
   , mInnerView(nullptr)
   , mBackgroundSink(nullptr)
   , mReflowCallbackPosted(false)
@@ -195,6 +195,7 @@ nsPluginFrame::Init(nsIContent*       aContent,
          ("Initializing nsPluginFrame %p for content %p\n", this, aContent));
 
   nsFrame::Init(aContent, aParent, aPrevInFlow);
+  CreateView();
 }
 
 void
@@ -507,13 +508,13 @@ nsPluginFrame::Reflow(nsPresContext*           aPresContext,
   // arrived. Otherwise there may be PARAMs or other stuff that the
   // plugin needs to see that haven't arrived yet.
   if (!GetContent()->IsDoneAddingChildren()) {
-    aStatus = NS_FRAME_COMPLETE;
+    aStatus.Reset();
     return;
   }
 
   // if we are printing or print previewing, bail for now
   if (aPresContext->Medium() == nsGkAtoms::print) {
-    aStatus = NS_FRAME_COMPLETE;
+    aStatus.Reset();
     return;
   }
 
@@ -532,7 +533,7 @@ nsPluginFrame::Reflow(nsPresContext*           aPresContext,
     aPresContext->PresShell()->PostReflowCallback(this);
   }
 
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
 
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aMetrics);
 }
@@ -1415,11 +1416,10 @@ nsPluginFrame::GetLayerState(nsDisplayListBuilder* aBuilder,
 #endif
 }
 
-class PluginFrameDidCompositeObserver final : public ClientLayerManager::
-  DidCompositeObserver
+class PluginFrameDidCompositeObserver final : public DidCompositeObserver
 {
 public:
-  PluginFrameDidCompositeObserver(nsPluginInstanceOwner* aOwner, ClientLayerManager* aLayerManager)
+  PluginFrameDidCompositeObserver(nsPluginInstanceOwner* aOwner, LayerManager* aLayerManager)
     : mInstanceOwner(aOwner),
       mLayerManager(aLayerManager)
   {
@@ -1430,13 +1430,13 @@ public:
   void DidComposite() override {
     mInstanceOwner->DidComposite();
   }
-  bool IsValid(ClientLayerManager* aLayerManager) {
+  bool IsValid(LayerManager* aLayerManager) {
     return aLayerManager == mLayerManager;
   }
 
 private:
   nsPluginInstanceOwner* mInstanceOwner;
-  RefPtr<ClientLayerManager> mLayerManager;
+  RefPtr<LayerManager> mLayerManager;
 };
 
 already_AddRefed<Layer>
@@ -1520,10 +1520,11 @@ nsPluginFrame::BuildLayer(nsDisplayListBuilder* aBuilder,
 
     if (aBuilder->IsPaintingToWindow() &&
         aBuilder->GetWidgetLayerManager() &&
-        aBuilder->GetWidgetLayerManager()->AsClientLayerManager() &&
+        (aBuilder->GetWidgetLayerManager()->GetBackendType() == LayersBackend::LAYERS_CLIENT ||
+         aBuilder->GetWidgetLayerManager()->GetBackendType() == LayersBackend::LAYERS_WR) &&
         mInstanceOwner->UseAsyncRendering())
     {
-      RefPtr<ClientLayerManager> lm = aBuilder->GetWidgetLayerManager()->AsClientLayerManager();
+      RefPtr<LayerManager> lm = aBuilder->GetWidgetLayerManager();
       if (!mDidCompositeObserver || !mDidCompositeObserver->IsValid(lm)) {
         mDidCompositeObserver = MakeUnique<PluginFrameDidCompositeObserver>(mInstanceOwner, lm);
       }
@@ -1853,7 +1854,7 @@ nsPluginFrame::EndSwapDocShells(nsISupports* aSupports, void*)
     nsIWidget* parent =
       rootPC->PresShell()->GetRootFrame()->GetNearestWidget();
     widget->SetParent(parent);
-    nsWeakFrame weakFrame(objectFrame);
+    AutoWeakFrame weakFrame(objectFrame);
     objectFrame->CallSetWindow();
     if (!weakFrame.IsAlive()) {
       return;

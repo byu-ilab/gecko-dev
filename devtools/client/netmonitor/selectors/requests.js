@@ -5,8 +5,8 @@
 "use strict";
 
 const { createSelector } = require("devtools/client/shared/vendor/reselect");
-const { Filters, isFreetextMatch } = require("../filter-predicates");
-const { Sorters } = require("../sort-predicates");
+const { Filters, isFreetextMatch } = require("../utils/filter-predicates");
+const { Sorters } = require("../utils/sort-predicates");
 
 /**
  * Take clones into account when sorting.
@@ -77,24 +77,30 @@ const getDisplayedRequestsSummary = createSelector(
       return { count: 0, bytes: 0, millis: 0 };
     }
 
-    const totalBytes = requests.reduce((total, item) => {
+    const totalBytes = requests.reduce((totals, item) => {
       if (typeof item.contentSize == "number") {
-        total += item.contentSize;
+        totals.contentSize += item.contentSize;
       }
-      return total;
-    }, 0);
+
+      if (typeof item.transferredSize == "number" && !item.fromCache) {
+        totals.transferredSize += item.transferredSize;
+      }
+
+      return totals;
+    }, { contentSize: 0, transferredSize: 0 });
 
     return {
       count: requests.size,
-      bytes: totalBytes,
+      contentSize: totalBytes.contentSize,
       millis: totalMillis,
+      transferredSize: totalBytes.transferredSize,
     };
   }
 );
 
 const getSelectedRequest = createSelector(
   state => state.requests,
-  ({ selectedId, requests }) => selectedId ? requests.get(selectedId) : null
+  ({ selectedId, requests }) => selectedId ? requests.get(selectedId) : undefined
 );
 
 function getRequestById(state, id) {

@@ -25,6 +25,7 @@
 #ifdef XP_WIN
 #include <process.h>
 #include "mozilla/ipc/WindowsMessageLoop.h"
+#include "mozilla/TlsAllocationTracker.h"
 #endif
 
 #include "nsAppDirectoryServiceDefs.h"
@@ -52,6 +53,7 @@
 #include "chrome/common/child_process.h"
 #if defined(MOZ_WIDGET_ANDROID)
 #include "chrome/common/ipc_channel.h"
+#include "mozilla/jni/Utils.h"
 #endif //  defined(MOZ_WIDGET_ANDROID)
 
 #include "mozilla/ipc/BrowserProcessSubThread.h"
@@ -239,8 +241,9 @@ GeckoProcessType sChildProcessType = GeckoProcessType_Default;
 
 #if defined(MOZ_WIDGET_ANDROID)
 void
-XRE_SetAndroidChildFds (int crashFd, int ipcFd)
+XRE_SetAndroidChildFds (JNIEnv* env, int crashFd, int ipcFd)
 {
+  mozilla::jni::SetGeckoThreadEnv(env);
 #if defined(MOZ_CRASHREPORTER)
   CrashReporter::SetNotificationPipeForChild(crashFd);
 #endif // defined(MOZ_CRASHREPORTER)
@@ -356,6 +359,14 @@ XRE_InitChildProcess(int aArgc,
 #endif
 
 #if defined(XP_WIN)
+#ifndef DEBUG
+  // XXX Bug 1320134: added for diagnosing the crashes because we're running out
+  // of TLS indices on Windows. Remove after the root cause is found.
+  if (XRE_GetProcessType() == GeckoProcessType_Content) {
+    mozilla::InitTlsAllocationTracker();
+  }
+#endif
+
   // From the --attach-console support in nsNativeAppSupportWin.cpp, but
   // here we are a content child process, so we always attempt to attach
   // to the parent's (ie, the browser's) console.
@@ -572,7 +583,7 @@ XRE_InitChildProcess(int aArgc,
       nsString appId;
       appId.AssignWithConversion(nsDependentCString(appModelUserId));
       // The version string is encased in quotes
-      appId.Trim(NS_LITERAL_CSTRING("\"").get());
+      appId.Trim("\"");
       // Set the id
       SetTaskbarGroupId(appId);
     }
@@ -625,49 +636,8 @@ XRE_InitChildProcess(int aArgc,
         process = new PluginProcessChild(parentPID);
         break;
 
-      case GeckoProcessType_Content: {
-          process = new ContentProcess(parentPID);
-          // If passed in grab the application path for xpcom init
-          bool foundAppdir = false;
-
-#if defined(XP_MACOSX) && defined(MOZ_CONTENT_SANDBOX)
-          // If passed in grab the profile path for sandboxing
-          bool foundProfile = false;
-#endif
-
-          for (int idx = aArgc; idx > 0; idx--) {
-            if (aArgv[idx] && !strcmp(aArgv[idx], "-appdir")) {
-              MOZ_ASSERT(!foundAppdir);
-              if (foundAppdir) {
-                  continue;
-              }
-              nsCString appDir;
-              appDir.Assign(nsDependentCString(aArgv[idx+1]));
-              static_cast<ContentProcess*>(process.get())->SetAppDir(appDir);
-              foundAppdir = true;
-            }
-
-#if defined(XP_MACOSX) && defined(MOZ_CONTENT_SANDBOX)
-            if (aArgv[idx] && !strcmp(aArgv[idx], "-profile")) {
-              MOZ_ASSERT(!foundProfile);
-              if (foundProfile) {
-                continue;
-              }
-              nsCString profile;
-              profile.Assign(nsDependentCString(aArgv[idx+1]));
-              static_cast<ContentProcess*>(process.get())->SetProfile(profile);
-              foundProfile = true;
-            }
-            if (foundProfile && foundAppdir) {
-              break;
-            }
-#else
-            if (foundAppdir) {
-              break;
-            }
-#endif /* XP_MACOSX && MOZ_CONTENT_SANDBOX */
-          }
-        }
+      case GeckoProcessType_Content:
+        process = new ContentProcess(parentPID);
         break;
 
       case GeckoProcessType_IPDLUnitTest:
@@ -690,7 +660,7 @@ XRE_InitChildProcess(int aArgc,
         MOZ_CRASH("Unknown main thread class");
       }
 
-      if (!process->Init()) {
+      if (!process->Init(aArgc, aArgv)) {
         return NS_ERROR_FAILURE;
       }
 
@@ -735,6 +705,14 @@ XRE_InitChildProcess(int aArgc,
 #endif
     }
   }
+
+#if defined(XP_WIN) && !defined(DEBUG)
+  // XXX Bug 1320134: added for diagnosing the crashes because we're running out
+  // of TLS indices on Windows. Remove after the root cause is found.
+  if (XRE_GetProcessType() == GeckoProcessType_Content) {
+    mozilla::ShutdownTlsAllocationTracker();
+  }
+#endif
 
   Telemetry::DestroyStatisticsRecorder();
   return XRE_DeinitCommandLine();

@@ -62,6 +62,7 @@
 #include "ScrollSnap.h"
 #include "UnitTransforms.h"
 #include "nsPluginFrame.h"
+#include "nsSliderFrame.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
 #include <mozilla/layers/AxisPhysicsModel.h>
 #include <mozilla/layers/AxisPhysicsMSDModel.h>
@@ -1105,7 +1106,7 @@ nsHTMLScrollFrame::Reflow(nsPresContext*           aPresContext,
 
   mHelper.UpdatePrevScrolledRect();
 
-  aStatus = NS_FRAME_COMPLETE;
+  aStatus.Reset();
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowInput, aDesiredSize);
   mHelper.PostOverflowEvent();
 }
@@ -2150,7 +2151,7 @@ ScrollFrameHelper::CompleteAsyncScroll(const nsRect &aRange, nsIAtom* aOrigin)
   // Apply desired destination range since this is the last step of scrolling.
   mAsyncSmoothMSDScroll = nullptr;
   mAsyncScroll = nullptr;
-  nsWeakFrame weakFrame(mOuter);
+  AutoWeakFrame weakFrame(mOuter);
   ScrollToImpl(mDestination, aRange, aOrigin);
   if (!weakFrame.IsAlive()) {
     return;
@@ -2817,7 +2818,9 @@ ScrollFrameHelper::ScrollToImpl(nsPoint aPt, const nsRect& aRange, nsIAtom* aOri
   ScrollVisual();
 
   bool schedulePaint = true;
-  if (nsLayoutUtils::AsyncPanZoomEnabled(mOuter) && gfxPrefs::APZPaintSkipping()) {
+  if (nsLayoutUtils::AsyncPanZoomEnabled(mOuter) &&
+      !nsLayoutUtils::ShouldDisableApzForElement(content) &&
+      gfxPrefs::APZPaintSkipping()) {
     // If APZ is enabled with paint-skipping, there are certain conditions in
     // which we can skip paints:
     // 1) If APZ triggered this scroll, and the tile-aligned displayport is
@@ -2903,7 +2906,7 @@ ScrollFrameHelper::ScrollToImpl(nsPoint aPt, const nsRect& aRange, nsIAtom* aOri
 
   { // scope the AutoScrollbarRepaintSuppression
     AutoScrollbarRepaintSuppression repaintSuppression(this, !schedulePaint);
-    nsWeakFrame weakFrame(mOuter);
+    AutoWeakFrame weakFrame(mOuter);
     UpdateScrollbarPosition();
     if (!weakFrame.IsAlive()) {
       return;
@@ -2911,7 +2914,8 @@ ScrollFrameHelper::ScrollToImpl(nsPoint aPt, const nsRect& aRange, nsIAtom* aOri
   }
 
   presContext->RecordInteractionTime(
-    nsPresContext::InteractionType::eScrollInteraction);
+    nsPresContext::InteractionType::eScrollInteraction,
+    TimeStamp::Now());
 
   PostScrollEvent();
 
@@ -2989,7 +2993,10 @@ AppendToTop(nsDisplayListBuilder* aBuilder, const nsDisplayListSet& aLists,
     uint32_t flags = (aFlags & APPEND_SCROLLBAR_CONTAINER)
                      ? nsDisplayOwnLayer::SCROLLBAR_CONTAINER
                      : 0;
-    newItem = new (aBuilder) nsDisplayOwnLayer(aBuilder, aSourceFrame, aSource, asr, flags);
+    FrameMetrics::ViewID scrollTarget = (aFlags & APPEND_SCROLLBAR_CONTAINER)
+                                        ? aBuilder->GetCurrentScrollbarTarget()
+                                        : FrameMetrics::NULL_SCROLL_ID;
+    newItem = new (aBuilder) nsDisplayOwnLayer(aBuilder, aSourceFrame, aSource, asr, flags, scrollTarget);
   } else {
     newItem = new (aBuilder) nsDisplayWrapList(aBuilder, aSourceFrame, aSource, asr);
   }
@@ -3095,7 +3102,8 @@ ScrollFrameHelper::AppendScrollPartsTo(nsDisplayListBuilder*   aBuilder,
     // Always create layers for overlay scrollbars so that we don't create a
     // giant layer covering the whole scrollport if both scrollbars are visible.
     bool isOverlayScrollbar = (flags != 0) && overlayScrollbars;
-    bool createLayer = aCreateLayer || isOverlayScrollbar;
+    bool createLayer = aCreateLayer || isOverlayScrollbar ||
+        gfxPrefs::AlwaysLayerizeScrollbarTrackTestOnly();
 
     nsDisplayListBuilder::AutoCurrentScrollbarInfoSetter
       infoSetter(aBuilder, scrollTargetId, flags, createLayer);
@@ -3601,7 +3609,9 @@ ScrollFrameHelper::DecideScrollableLayer(nsDisplayListBuilder* aBuilder,
 
         // Only restrict to the root composition bounds if necessary,
         // as the required coordinate transformation is expensive.
-        if (wasUsingDisplayPort) {
+        // Note that we call HasDisplayPort again instead of using
+        // wasUsingDisplayPort because we might have just created a display port.
+        if (nsLayoutUtils::HasDisplayPort(content)) {
           const nsPresContext* rootPresContext =
             pc->GetToplevelContentDocumentPresContext();
           if (!rootPresContext) {
@@ -4011,7 +4021,7 @@ ScrollFrameHelper::ScrollBy(nsIntPoint aDelta,
                rangeLowerY,
                rangeUpperX - rangeLowerX,
                rangeUpperY - rangeLowerY);
-  nsWeakFrame weakFrame(mOuter);
+  AutoWeakFrame weakFrame(mOuter);
   ScrollToWithOrigin(newPos, aMode, aOrigin, &range);
   if (!weakFrame.IsAlive()) {
     return;
@@ -4218,7 +4228,7 @@ ScrollFrameHelper::ScrollToRestoredPosition()
         scrollToPos.x = mScrollPort.x -
           (mScrollPort.XMost() - scrollToPos.x - mScrolledFrame->GetRect().width);
       }
-      nsWeakFrame weakFrame(mOuter);
+      AutoWeakFrame weakFrame(mOuter);
       ScrollToWithOrigin(scrollToPos, nsIScrollableFrame::INSTANT,
                          nsGkAtoms::restore, nullptr);
       if (!weakFrame.IsAlive()) {
@@ -4595,7 +4605,7 @@ ScrollFrameHelper::Destroy()
 void
 ScrollFrameHelper::UpdateScrollbarPosition()
 {
-  nsWeakFrame weakFrame(mOuter);
+  AutoWeakFrame weakFrame(mOuter);
   mFrameIsUpdatingScrollbar = true;
 
   nsPoint pt = GetScrollPosition();
@@ -4667,7 +4677,7 @@ void ScrollFrameHelper::CurPosAttributeChanged(nsIContent* aContent)
     // didn't actually move yet.  We need to make sure other listeners
     // see that the scroll position is not (yet) what they thought it
     // was.
-    nsWeakFrame weakFrame(mOuter);
+    AutoWeakFrame weakFrame(mOuter);
     UpdateScrollbarPosition();
     if (!weakFrame.IsAlive()) {
       return;
@@ -4707,6 +4717,7 @@ ScrollFrameHelper::ScrollEvent::WillRefresh(mozilla::TimeStamp aTime)
 void
 ScrollFrameHelper::FireScrollEvent()
 {
+  GeckoProfilerTracingRAII tracer("Paint", "FireScrollEvent");
   MOZ_ASSERT(mScrollEvent);
   mScrollEvent = nullptr;
 
@@ -4721,6 +4732,7 @@ ScrollFrameHelper::FireScrollEvent()
   if (mIsRoot) {
     nsIDocument* doc = content->GetUncomposedDoc();
     if (doc) {
+      prescontext->SetTelemetryScrollY(GetScrollPosition().y);
       EventDispatcher::Dispatch(doc, prescontext, &event, nullptr,  &status);
     }
   } else {
@@ -5302,7 +5314,7 @@ ScrollFrameHelper::ReflowFinished()
   // for scrollbars. XXXmats is this still true now that we have a script
   // blocker in this scope? (if not, remove the weak frame checks below).
   if (vScroll || hScroll) {
-    nsWeakFrame weakFrame(mOuter);
+    AutoWeakFrame weakFrame(mOuter);
     nsPoint scrollPos = GetScrollPosition();
     nsSize lineScrollAmount = GetLineScrollAmount();
     if (vScroll) {
@@ -5666,7 +5678,7 @@ ScrollFrameHelper::SetCoordAttribute(nsIContent* aContent, nsIAtom* aAtom,
   if (aContent->AttrValueIs(kNameSpaceID_None, aAtom, newValue, eCaseMatters))
     return;
 
-  nsWeakFrame weakFrame(mOuter);
+  AutoWeakFrame weakFrame(mOuter);
   nsCOMPtr<nsIContent> kungFuDeathGrip = aContent;
   aContent->SetAttr(kNameSpaceID_None, aAtom, newValue, true);
   MOZ_ASSERT(ShellIsAlive(weakShell), "pres shell was destroyed by scrolling");
@@ -6214,4 +6226,31 @@ ScrollFrameHelper::DragScroll(WidgetEvent* aEvent)
   }
 
   return willScroll;
+}
+
+static void
+AsyncScrollbarDragRejected(nsIFrame* aScrollbar)
+{
+  if (!aScrollbar) {
+    return;
+  }
+
+  for (nsIFrame::ChildListIterator childLists(aScrollbar);
+       !childLists.IsDone();
+       childLists.Next()) {
+    for (nsIFrame* frame : childLists.CurrentList()) {
+      if (nsSliderFrame* sliderFrame = do_QueryFrame(frame)) {
+        sliderFrame->AsyncScrollbarDragRejected();
+      }
+    }
+  }
+}
+
+void
+ScrollFrameHelper::AsyncScrollbarDragRejected()
+{
+  // We don't get told which scrollbar requested the async drag,
+  // so we notify both.
+  ::AsyncScrollbarDragRejected(mHScrollbarBox);
+  ::AsyncScrollbarDragRejected(mVScrollbarBox);
 }

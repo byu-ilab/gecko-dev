@@ -141,7 +141,7 @@ DoOCSPRequest(const UniquePLArenaPool& arena, const char* url,
   }
   nsAutoCString
     hostname(url + authorityPos + hostnamePos,
-             static_cast<nsACString_internal::size_type>(hostnameLen));
+             static_cast<nsACString::size_type>(hostnameLen));
 
   nsNSSHttpServerSession* serverSessionPtr = nullptr;
   Result rv = nsNSSHttpInterface::createSessionFcn(
@@ -166,7 +166,7 @@ DoOCSPRequest(const UniquePLArenaPool& arena, const char* url,
     if (!StringEndsWith(path, NS_LITERAL_CSTRING("/"))) {
       path.Append("/");
     }
-    nsresult nsrv = AppendEscapedBase64Item(encodedRequest, path);
+    nsrv = AppendEscapedBase64Item(encodedRequest, path);
     if (NS_WARN_IF(NS_FAILED(nsrv))) {
       return Result::FATAL_ERROR_LIBRARY_FAILURE;
     }
@@ -196,7 +196,7 @@ DoOCSPRequest(const UniquePLArenaPool& arena, const char* url,
   const char* httpResponseData;
   uint32_t httpResponseDataLen = 0; // 0 means any response size is acceptable
   rv = nsNSSHttpInterface::trySendAndReceiveFcn(requestSession.get(), nullptr,
-                                                &httpResponseCode, nullptr,
+                                                &httpResponseCode,
                                                 nullptr, &httpResponseData,
                                                 &httpResponseDataLen);
   if (rv != Success) {

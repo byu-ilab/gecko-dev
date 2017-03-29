@@ -9,6 +9,8 @@
  * responsible for converting the rules' information into computed style
  */
 
+#include "nsRuleNode.h"
+
 #include <algorithm>
 #include <functional>
 
@@ -26,8 +28,8 @@
 #include "mozilla/TypeTraits.h"
 
 #include "nsAlgorithm.h" // for clamped()
-#include "nsRuleNode.h"
 #include "nscore.h"
+#include "nsCRT.h" // for IsAscii()
 #include "nsIWidget.h"
 #include "nsIPresShell.h"
 #include "nsFontMetrics.h"
@@ -140,9 +142,8 @@ CreateStyleImageRequest(nsPresContext* aPresContext, const nsCSSValue& aValue,
   return request.forget();
 }
 
-template<typename ReferenceBox>
 static void
-SetStyleShapeSourceToCSSValue(StyleShapeSource<ReferenceBox>* aShapeSource,
+SetStyleShapeSourceToCSSValue(StyleShapeSource* aShapeSource,
                               const nsCSSValue* aValue,
                               nsStyleContext* aStyleContext,
                               nsPresContext* aPresContext,
@@ -1449,12 +1450,14 @@ struct SetEnumValueHelper
   DEFINE_ENUM_CLASS_SETTER(StyleFloat, None, InlineEnd)
   DEFINE_ENUM_CLASS_SETTER(StyleFloatEdge, ContentBox, MarginBox)
   DEFINE_ENUM_CLASS_SETTER(StyleHyphens, None, Auto)
+  DEFINE_ENUM_CLASS_SETTER(StyleTextJustify, None, InterCharacter)
   DEFINE_ENUM_CLASS_SETTER(StyleUserFocus, None, SelectMenu)
   DEFINE_ENUM_CLASS_SETTER(StyleUserSelect, None, MozText)
   DEFINE_ENUM_CLASS_SETTER(StyleUserInput, None, Auto)
   DEFINE_ENUM_CLASS_SETTER(StyleUserModify, ReadOnly, WriteOnly)
   DEFINE_ENUM_CLASS_SETTER(StyleWindowDragging, Default, NoDrag)
   DEFINE_ENUM_CLASS_SETTER(StyleOrient, Inline, Vertical)
+  DEFINE_ENUM_CLASS_SETTER(StyleGeometryBox, BorderBox, ViewBox)
 #ifdef MOZ_XUL
   DEFINE_ENUM_CLASS_SETTER(StyleDisplay, None, MozPopup)
 #else
@@ -2615,6 +2618,9 @@ nsRuleNode::WalkRuleTree(const nsStyleStructID aSID,
       const void* parentStruct = parentContext->StyleData(aSID);
       aContext->AddStyleBit(bit); // makes const_cast OK.
       aContext->SetStyle(aSID, const_cast<void*>(parentStruct));
+      if (isReset) {
+        parentContext->AddStyleBit(NS_STYLE_HAS_CHILD_THAT_USES_RESET_STYLE);
+      }
       return parentStruct;
     }
     else
@@ -3853,13 +3859,13 @@ nsRuleNode::SetFont(nsPresContext* aPresContext, nsStyleContext* aContext,
            defaultVariableFont->kerning,
            Unused, Unused, Unused, systemFont.kerning);
 
-  // font-synthesis: none, enum (bit field), inherit, initial, -moz-system-font
+  // font-synthesis: none, enum (bit field), inherit, initial
   SetValue(*aRuleData->ValueForFontSynthesis(),
            aFont->mFont.synthesis, aConditions,
            SETVAL_ENUMERATED | SETVAL_UNSET_INHERIT,
            aParentFont->mFont.synthesis,
            defaultVariableFont->synthesis,
-           Unused, /* none */ 0, Unused, systemFont.synthesis);
+           Unused, /* none */ 0, Unused, Unused);
 
   // font-variant-alternates: normal, enum (bit field) + functions, inherit,
   //                          initial, -moz-system-font
@@ -4030,11 +4036,13 @@ nsRuleNode::SetFont(nsPresContext* aPresContext, nsStyleContext* aContext,
     aFont->mFont.languageOverride = aParentFont->mFont.languageOverride;
   } else if (eCSSUnit_Normal == languageOverrideValue->GetUnit() ||
              eCSSUnit_Initial == languageOverrideValue->GetUnit()) {
-    aFont->mFont.languageOverride.Truncate();
+    aFont->mFont.languageOverride = NO_FONT_LANGUAGE_OVERRIDE;
   } else if (eCSSUnit_System_Font == languageOverrideValue->GetUnit()) {
     aFont->mFont.languageOverride = systemFont.languageOverride;
   } else if (eCSSUnit_String == languageOverrideValue->GetUnit()) {
-    languageOverrideValue->GetStringValue(aFont->mFont.languageOverride);
+    nsAutoString lang;
+    languageOverrideValue->GetStringValue(lang);
+    aFont->mFont.languageOverride = ParseFontLanguageOverride(lang);
   }
 
   // -moz-min-font-size-ratio: percent, inherit
@@ -4401,6 +4409,26 @@ nsRuleNode::ComputeFontData(void* aStartStruct,
   }
 
   COMPUTE_END_INHERITED(Font, font)
+}
+
+/*static*/ uint32_t
+nsRuleNode::ParseFontLanguageOverride(const nsAString& aLangTag)
+{
+  if (!aLangTag.Length() || aLangTag.Length() > 4) {
+    return NO_FONT_LANGUAGE_OVERRIDE;
+  }
+  uint32_t index, result = 0;
+  for (index = 0; index < aLangTag.Length(); ++index) {
+    char16_t ch = aLangTag[index];
+    if (!nsCRT::IsAscii(ch)) { // valid tags are pure ASCII
+      return NO_FONT_LANGUAGE_OVERRIDE;
+    }
+    result = (result << 8) + ch;
+  }
+  while (index++ < 4) {
+    result = (result << 8) + 0x20;
+  }
+  return result;
 }
 
 template <typename T>
@@ -4873,6 +4901,12 @@ nsRuleNode::ComputeTextData(void* aStartStruct,
              SETCOORD_UNSET_INHERIT,
            aContext, mPresContext, conditions);
 
+  // text-justify: enum, inherit, initial
+  SetValue(*aRuleData->ValueForTextJustify(), text->mTextJustify, conditions,
+           SETVAL_ENUMERATED | SETVAL_UNSET_INHERIT,
+           parentText->mTextJustify,
+           StyleTextJustify::Auto);
+
   // text-transform: enum, inherit, initial
   SetValue(*aRuleData->ValueForTextTransform(), text->mTextTransform, conditions,
            SETVAL_ENUMERATED | SETVAL_UNSET_INHERIT,
@@ -4930,13 +4964,12 @@ nsRuleNode::ComputeTextData(void* aStartStruct,
            parentText->mRubyPosition,
            NS_STYLE_RUBY_POSITION_OVER);
 
-  // text-size-adjust: none, auto, inherit, initial
-  SetValue(*aRuleData->ValueForTextSizeAdjust(), text->mTextSizeAdjust,
-           conditions, SETVAL_UNSET_INHERIT,
+  // text-size-adjust: enum, inherit, initial
+  SetValue(*aRuleData->ValueForTextSizeAdjust(),
+           text->mTextSizeAdjust, conditions,
+           SETVAL_ENUMERATED | SETVAL_UNSET_INHERIT,
            parentText->mTextSizeAdjust,
-           /* initial */ NS_STYLE_TEXT_SIZE_ADJUST_AUTO,
-           /* auto */ NS_STYLE_TEXT_SIZE_ADJUST_AUTO,
-           /* none */ NS_STYLE_TEXT_SIZE_ADJUST_NONE, Unused, Unused);
+           NS_STYLE_TEXT_SIZE_ADJUST_AUTO);
 
   // text-combine-upright: enum, inherit, initial
   SetValue(*aRuleData->ValueForTextCombineUpright(),
@@ -5506,6 +5539,18 @@ nsRuleNode::ComputeTimingFunction(const nsCSSValue& aValue,
               nsTimingFunction::Type::StepStart :
               nsTimingFunction::Type::StepEnd;
         aResult = nsTimingFunction(type, array->Item(0).GetIntValue());
+      }
+      break;
+    case eCSSUnit_Function:
+      {
+        nsCSSValue::Array* array = aValue.GetArrayValue();
+        NS_ASSERTION(array && array->Count() == 2, "Need 2 items");
+        NS_ASSERTION(array->Item(0).GetKeywordValue() == eCSSKeyword_frames,
+                     "should be frames function");
+        NS_ASSERTION(array->Item(1).GetUnit() == eCSSUnit_Integer,
+                     "unexpected frames function value");
+        aResult = nsTimingFunction(nsTimingFunction::Type::Frames,
+                                   array->Item(1).GetIntValue());
       }
       break;
     default:
@@ -6126,33 +6171,35 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
   // See ReflowInput::CalculateHypotheticalBox
   display->mOriginalDisplay = display->mDisplay;
 
-  // appearance: enum, inherit, initial
+  // -moz-appearance: enum, inherit, initial
+  SetValue(*aRuleData->ValueForMozAppearance(),
+           display->mMozAppearance, conditions,
+           SETVAL_ENUMERATED | SETVAL_UNSET_INITIAL,
+           parentDisplay->mMozAppearance,
+           NS_THEME_NONE);
+
+  // appearance: auto | none
   SetValue(*aRuleData->ValueForAppearance(),
            display->mAppearance, conditions,
            SETVAL_ENUMERATED | SETVAL_UNSET_INITIAL,
            parentDisplay->mAppearance,
-           NS_THEME_NONE);
+           NS_THEME_AUTO);
 
   // binding: url, none, inherit
   const nsCSSValue* bindingValue = aRuleData->ValueForBinding();
   if (eCSSUnit_URL == bindingValue->GetUnit()) {
     mozilla::css::URLValue* url = bindingValue->GetURLStructValue();
     NS_ASSERTION(url, "What's going on here?");
-
-    if (MOZ_LIKELY(url->GetURI())) {
-      display->mBinding = url;
-    } else {
-      display->mBinding = nullptr;
-    }
+    display->mBinding.Set(url);
   }
   else if (eCSSUnit_None == bindingValue->GetUnit() ||
            eCSSUnit_Initial == bindingValue->GetUnit() ||
            eCSSUnit_Unset == bindingValue->GetUnit()) {
-    display->mBinding = nullptr;
+    display->mBinding.Set(nullptr);
   }
   else if (eCSSUnit_Inherit == bindingValue->GetUnit()) {
     conditions.SetUncacheable();
-    display->mBinding = parentDisplay->mBinding;
+    display->mBinding.Set(parentDisplay->mBinding);
   }
 
   // position: enum, inherit, initial
@@ -6443,36 +6490,31 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
     for (const nsCSSValueList* item = willChangeValue->GetListValue();
          item; item = item->mNext)
     {
-      if (item->mValue.UnitHasStringValue()) {
-        nsAutoString buffer;
-        item->mValue.GetStringValue(buffer);
-        display->mWillChange.AppendElement(buffer);
+      nsIAtom* atom = item->mValue.GetAtomValue();
+      display->mWillChange.AppendElement(atom);
+      if (atom == nsGkAtoms::transform) {
+        display->mWillChangeBitField |= NS_STYLE_WILL_CHANGE_TRANSFORM;
+      } else if (atom == nsGkAtoms::opacity) {
+        display->mWillChangeBitField |= NS_STYLE_WILL_CHANGE_OPACITY;
+      } else if (atom == nsGkAtoms::scrollPosition) {
+        display->mWillChangeBitField |= NS_STYLE_WILL_CHANGE_SCROLL;
+      }
 
-        if (buffer.EqualsLiteral("transform")) {
-          display->mWillChangeBitField |= NS_STYLE_WILL_CHANGE_TRANSFORM;
-        }
-        if (buffer.EqualsLiteral("opacity")) {
-          display->mWillChangeBitField |= NS_STYLE_WILL_CHANGE_OPACITY;
-        }
-        if (buffer.EqualsLiteral("scroll-position")) {
-          display->mWillChangeBitField |= NS_STYLE_WILL_CHANGE_SCROLL;
-        }
-
-        nsCSSPropertyID prop =
-          nsCSSProps::LookupProperty(buffer, CSSEnabledState::eForAllContent);
-        if (prop != eCSSProperty_UNKNOWN &&
-            prop != eCSSPropertyExtra_variable) {
-          // If the property given is a shorthand, it indicates the expectation
-          // for all the longhands the shorthand expands to.
-          if (nsCSSProps::IsShorthand(prop)) {
-            for (const nsCSSPropertyID* shorthands =
-                   nsCSSProps::SubpropertyEntryFor(prop);
-                 *shorthands != eCSSProperty_UNKNOWN; ++shorthands) {
-              display->mWillChangeBitField |= GetWillChangeBitFieldFromPropFlags(*shorthands);
-            }
-          } else {
-            display->mWillChangeBitField |= GetWillChangeBitFieldFromPropFlags(prop);
+      nsDependentAtomString buffer(atom);
+      nsCSSPropertyID prop =
+        nsCSSProps::LookupProperty(buffer, CSSEnabledState::eForAllContent);
+      if (prop != eCSSProperty_UNKNOWN &&
+          prop != eCSSPropertyExtra_variable) {
+        // If the property given is a shorthand, it indicates the expectation
+        // for all the longhands the shorthand expands to.
+        if (nsCSSProps::IsShorthand(prop)) {
+          for (const nsCSSPropertyID* shorthands =
+                  nsCSSProps::SubpropertyEntryFor(prop);
+                *shorthands != eCSSProperty_UNKNOWN; ++shorthands) {
+            display->mWillChangeBitField |= GetWillChangeBitFieldFromPropFlags(*shorthands);
           }
+        } else {
+          display->mWillChangeBitField |= GetWillChangeBitFieldFromPropFlags(prop);
         }
       }
     }
@@ -6480,7 +6522,8 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
   }
 
   case eCSSUnit_Inherit:
-    display->mWillChange = parentDisplay->mWillChange;
+    display->mWillChange.Clear();
+    display->mWillChange.AppendElements(parentDisplay->mWillChange);
     display->mWillChangeBitField = parentDisplay->mWillChangeBitField;
     conditions.SetUncacheable();
     break;
@@ -6597,7 +6640,7 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
            display->mTransformBox, conditions,
            SETVAL_ENUMERATED | SETVAL_UNSET_INITIAL,
            parentDisplay->mTransformBox,
-           NS_STYLE_TRANSFORM_BOX_BORDER_BOX);
+           StyleGeometryBox::BorderBox);
 
   // orient: enum, inherit, initial
   SetValue(*aRuleData->ValueForOrient(),
@@ -6614,19 +6657,19 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
     case eCSSUnit_None:
     case eCSSUnit_Initial:
     case eCSSUnit_Unset:
-      display->mShapeOutside = StyleShapeOutside();
+      display->mShapeOutside = StyleShapeSource();
       break;
     case eCSSUnit_Inherit:
       conditions.SetUncacheable();
       display->mShapeOutside = parentDisplay->mShapeOutside;
       break;
     case eCSSUnit_URL: {
-      display->mShapeOutside = StyleShapeOutside();
+      display->mShapeOutside = StyleShapeSource();
       display->mShapeOutside.SetURL(shapeOutsideValue->GetURLStructValue());
       break;
     }
     case eCSSUnit_Array: {
-      display->mShapeOutside = StyleShapeOutside();
+      display->mShapeOutside = StyleShapeSource();
       SetStyleShapeSourceToCSSValue(&display->mShapeOutside, shapeOutsideValue,
                                     aContext, mPresContext, conditions);
       break;
@@ -7445,7 +7488,7 @@ nsRuleNode::ComputeBackgroundData(void* aStartStruct,
                     bg->mImage.mLayers,
                     parentBG->mImage.mLayers,
                     &nsStyleImageLayers::Layer::mClip,
-                    StyleGeometryBox::Border,
+                    StyleGeometryBox::BorderBox,
                     parentBG->mImage.mClipCount,
                     bg->mImage.mClipCount, maxItemCount, rebuild, conditions);
 
@@ -7464,7 +7507,7 @@ nsRuleNode::ComputeBackgroundData(void* aStartStruct,
                     bg->mImage.mLayers,
                     parentBG->mImage.mLayers,
                     &nsStyleImageLayers::Layer::mOrigin,
-                    StyleGeometryBox::Padding,
+                    StyleGeometryBox::PaddingBox,
                     parentBG->mImage.mOriginCount,
                     bg->mImage.mOriginCount, maxItemCount, rebuild,
                     conditions);
@@ -8633,7 +8676,7 @@ nsRuleNode::ComputePositionData(void* aStartStruct,
   if (MOZ_UNLIKELY(justifyItemsValue.GetUnit() == eCSSUnit_Inherit)) {
     if (MOZ_LIKELY(parentContext)) {
       pos->mJustifyItems =
-        parentPos->ComputedJustifyItems(parentContext->GetParent());
+        parentPos->ComputedJustifyItems(parentContext->GetParentAllowServo());
     } else {
       pos->mJustifyItems = NS_STYLE_JUSTIFY_NORMAL;
     }
@@ -8991,7 +9034,7 @@ nsRuleNode::ComputeContentData(void* aStartStruct,
           nsStyleContentType type =
             unit == eCSSUnit_Counter ? eStyleContentType_Counter
                                      : eStyleContentType_Counters;
-          data.SetCounters(type, value.GetArrayValue());
+          data.SetCounters(type, value.GetThreadSafeArrayValue());
           break;
         }
         case eCSSUnit_Enumerated:
@@ -9278,6 +9321,13 @@ nsRuleNode::ComputeColumnData(void* aStartStruct,
            SETVAL_ENUMERATED | SETVAL_UNSET_INITIAL,
            parent->mColumnFill,
            NS_STYLE_COLUMN_FILL_BALANCE);
+
+  // column-span: enum
+  SetValue(*aRuleData->ValueForColumnSpan(),
+           column->mColumnSpan, conditions,
+           SETVAL_ENUMERATED | SETVAL_UNSET_INITIAL,
+           parent->mColumnSpan,
+           NS_STYLE_COLUMN_SPAN_NONE);
 
   COMPUTE_END_RESET(Column, column)
 }
@@ -9837,10 +9887,9 @@ GetStyleBasicShapeFromCSSValue(const nsCSSValue& aValue,
   return basicShape.forget();
 }
 
-template<typename ReferenceBox>
 static void
 SetStyleShapeSourceToCSSValue(
-  StyleShapeSource<ReferenceBox>* aShapeSource,
+  StyleShapeSource* aShapeSource,
   const nsCSSValue* aValue,
   nsStyleContext* aStyleContext,
   nsPresContext* aPresContext,
@@ -9853,13 +9902,13 @@ SetStyleShapeSourceToCSSValue(
   MOZ_ASSERT(array->Count() == 1 || array->Count() == 2,
              "Expect one or both of a shape function and a reference box");
 
-  ReferenceBox referenceBox = ReferenceBox::NoBox;
+  StyleGeometryBox referenceBox = StyleGeometryBox::NoBox;
   RefPtr<StyleBasicShape> basicShape;
 
   for (size_t i = 0; i < array->Count(); ++i) {
     const nsCSSValue& item = array->Item(i);
     if (item.GetUnit() == eCSSUnit_Enumerated) {
-      referenceBox = static_cast<ReferenceBox>(item.GetIntValue());
+      referenceBox = static_cast<StyleGeometryBox>(item.GetIntValue());
     } else if (item.GetUnit() == eCSSUnit_Function) {
       basicShape = GetStyleBasicShapeFromCSSValue(item, aStyleContext,
                                                   aPresContext, aConditions);
@@ -9984,19 +10033,19 @@ nsRuleNode::ComputeSVGResetData(void* aStartStruct,
     case eCSSUnit_None:
     case eCSSUnit_Initial:
     case eCSSUnit_Unset:
-      svgReset->mClipPath = StyleClipPath();
+      svgReset->mClipPath = StyleShapeSource();
       break;
     case eCSSUnit_Inherit:
       conditions.SetUncacheable();
       svgReset->mClipPath = parentSVGReset->mClipPath;
       break;
     case eCSSUnit_URL: {
-      svgReset->mClipPath = StyleClipPath();
+      svgReset->mClipPath = StyleShapeSource();
       svgReset->mClipPath.SetURL(clipPathValue->GetURLStructValue());
       break;
     }
     case eCSSUnit_Array: {
-      svgReset->mClipPath = StyleClipPath();
+      svgReset->mClipPath = StyleShapeSource();
       SetStyleShapeSourceToCSSValue(&svgReset->mClipPath, clipPathValue, aContext,
                                     mPresContext, conditions);
       break;
@@ -10079,7 +10128,7 @@ nsRuleNode::ComputeSVGResetData(void* aStartStruct,
                     svgReset->mMask.mLayers,
                     parentSVGReset->mMask.mLayers,
                     &nsStyleImageLayers::Layer::mClip,
-                    StyleGeometryBox::Border,
+                    StyleGeometryBox::BorderBox,
                     parentSVGReset->mMask.mClipCount,
                     svgReset->mMask.mClipCount, maxItemCount, rebuild,
                     conditions);
@@ -10089,7 +10138,7 @@ nsRuleNode::ComputeSVGResetData(void* aStartStruct,
                     svgReset->mMask.mLayers,
                     parentSVGReset->mMask.mLayers,
                     &nsStyleImageLayers::Layer::mOrigin,
-                    StyleGeometryBox::Border,
+                    StyleGeometryBox::BorderBox,
                     parentSVGReset->mMask.mOriginCount,
                     svgReset->mMask.mOriginCount, maxItemCount, rebuild,
                     conditions);

@@ -567,7 +567,7 @@ var gDevToolsBrowser = exports.gDevToolsBrowser = {
       let target = TargetFactory.forTab(aTab);
 
       gDevTools.showToolbox(target, "jsdebugger").then(toolbox => {
-        let threadClient = toolbox.getCurrentPanel().panelWin.gThreadClient;
+        let threadClient = toolbox.threadClient;
 
         // Break in place, which means resuming the debuggee thread and pausing
         // right before the next step happens.
@@ -751,7 +751,7 @@ var gDevToolsBrowser = exports.gDevToolsBrowser = {
 
     // Destroy toolboxes for closed window
     for (let [target, toolbox] of gDevTools._toolboxes) {
-      if (toolbox.win.top == win) {
+      if (target.tab && target.tab.ownerDocument.defaultView == win) {
         toolbox.destroy();
       }
     }

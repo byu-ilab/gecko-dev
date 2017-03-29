@@ -16,6 +16,7 @@ apt_packages+=('curl')
 apt_packages+=('npm')
 apt_packages+=('git')
 apt_packages+=('golang-1.6')
+apt_packages+=('libxml2-utils')
 apt_packages+=('ninja-build')
 apt_packages+=('pkg-config')
 apt_packages+=('zlib1g-dev')
@@ -50,7 +51,7 @@ ln -s /usr/include/x86_64-linux-gnu/zconf.h /usr/include
 
 # Install clang-3.9 into /usr/local/.
 # FIXME: verify signature
-curl -L http://releases.llvm.org/3.9.0/clang+llvm-3.9.0-x86_64-linux-gnu-ubuntu-16.04.tar.xz | tar xJv -C /usr/local --strip-components=1
+curl -L http://releases.llvm.org/3.9.1/clang+llvm-3.9.1-x86_64-linux-gnu-ubuntu-16.04.tar.xz | tar xJv -C /usr/local --strip-components=1
 
 # Install latest Rust (stable).
 su worker -c "curl https://sh.rustup.rs -sSf | sh -s -- -y"

@@ -57,7 +57,6 @@
 #include "gfxUtils.h"
 
 #include "nsFrameLoader.h"
-#include "nsBidi.h"
 #include "nsBidiPresUtils.h"
 #include "Layers.h"
 #include "LayerUserData.h"
@@ -90,6 +89,7 @@
 #include "mozilla/gfx/PathHelpers.h"
 #include "mozilla/gfx/DataSurfaceHelpers.h"
 #include "mozilla/gfx/PatternHelpers.h"
+#include "mozilla/gfx/Swizzle.h"
 #include "mozilla/ipc/DocumentRendererParent.h"
 #include "mozilla/ipc/PDocumentRendererParent.h"
 #include "mozilla/layers/PersistentBufferProvider.h"
@@ -566,7 +566,9 @@ public:
   explicit AdjustedTarget(CanvasRenderingContext2D* aCtx,
                           const gfx::Rect *aBounds = nullptr)
   {
-    mTarget = aCtx->mTarget;
+    // There are operations that can invalidate aCtx->mTarget along the way,
+    // so don't cache the pointer to it too soon.
+    mTarget = nullptr;
 
     // All rects in this function are in the device space of ctx->mTarget.
 
@@ -595,7 +597,7 @@ public:
     // are used.
     if (aCtx->NeedToDrawShadow()) {
       mShadowTarget = MakeUnique<AdjustedTargetForShadow>(
-        aCtx, mTarget, boundsAfterFilter, op);
+        aCtx, aCtx->mTarget, boundsAfterFilter, op);
       mTarget = mShadowTarget->DT();
       offsetToFinalDT = mShadowTarget->OffsetToFinalDT();
 
@@ -608,6 +610,9 @@ public:
     if (aCtx->NeedToApplyFilter()) {
       bounds.RoundOut();
 
+      if (!mTarget) {
+        mTarget = aCtx->mTarget;
+      }
       gfx::IntRect intBounds;
       if (!bounds.ToIntRect(&intBounds)) {
         return;
@@ -616,6 +621,9 @@ public:
         aCtx, mTarget, offsetToFinalDT, intBounds,
         gfx::RoundedToInt(boundsAfterFilter), op);
       mTarget = mFilterTarget->DT();
+    }
+    if (!mTarget) {
+      mTarget = aCtx->mTarget;
     }
   }
 
@@ -1050,6 +1058,8 @@ NS_INTERFACE_MAP_END
 // Initialize our static variables.
 uint32_t CanvasRenderingContext2D::sNumLivingContexts = 0;
 DrawTarget* CanvasRenderingContext2D::sErrorTarget = nullptr;
+static bool sMaxContextsInitialized = false;
+static int32_t sMaxContexts = 0;
 
 
 
@@ -1070,6 +1080,11 @@ CanvasRenderingContext2D::CanvasRenderingContext2D(layers::LayersBackend aCompos
   , mPathTransformWillUpdate(false)
   , mInvalidateCount(0)
 {
+  if (!sMaxContextsInitialized) {
+    sMaxContexts = gfxPrefs::CanvasAzureAcceleratedLimit();
+    sMaxContextsInitialized = true;
+  }
+
   sNumLivingContexts++;
 
   mShutdownObserver = new CanvasShutdownObserver(this);
@@ -1422,10 +1437,13 @@ CanvasRenderingContext2D::DemotableContexts()
 void
 CanvasRenderingContext2D::DemoteOldestContextIfNecessary()
 {
-  const size_t kMaxContexts = 64;
+  MOZ_ASSERT(sMaxContextsInitialized);
+  if (sMaxContexts <= 0) {
+    return;
+  }
 
   std::vector<CanvasRenderingContext2D*>& contexts = DemotableContexts();
-  if (contexts.size() < kMaxContexts)
+  if (contexts.size() < (size_t)sMaxContexts)
     return;
 
   CanvasRenderingContext2D* oldest = contexts.front();
@@ -1437,6 +1455,10 @@ CanvasRenderingContext2D::DemoteOldestContextIfNecessary()
 void
 CanvasRenderingContext2D::AddDemotableContext(CanvasRenderingContext2D* aContext)
 {
+  MOZ_ASSERT(sMaxContextsInitialized);
+  if (sMaxContexts <= 0)
+    return;
+
   std::vector<CanvasRenderingContext2D*>::iterator iter = std::find(DemotableContexts().begin(), DemotableContexts().end(), aContext);
   if (iter != DemotableContexts().end())
     return;
@@ -1447,6 +1469,10 @@ CanvasRenderingContext2D::AddDemotableContext(CanvasRenderingContext2D* aContext
 void
 CanvasRenderingContext2D::RemoveDemotableContext(CanvasRenderingContext2D* aContext)
 {
+  MOZ_ASSERT(sMaxContextsInitialized);
+  if (sMaxContexts <= 0)
+    return;
+
   std::vector<CanvasRenderingContext2D*>::iterator iter = std::find(DemotableContexts().begin(), DemotableContexts().end(), aContext);
   if (iter != DemotableContexts().end())
     DemotableContexts().erase(iter);
@@ -1879,11 +1905,7 @@ CanvasRenderingContext2D::GetHeight() const
 NS_IMETHODIMP
 CanvasRenderingContext2D::SetDimensions(int32_t aWidth, int32_t aHeight)
 {
-  bool retainBuffer = false;
-  if (aWidth == mWidth && aHeight == mHeight) {
-    retainBuffer = true;
-  }
-  ClearTarget(retainBuffer);
+  ClearTarget();
 
   // Zero sized surfaces can cause problems.
   mZero = false;
@@ -1902,22 +1924,9 @@ CanvasRenderingContext2D::SetDimensions(int32_t aWidth, int32_t aHeight)
 }
 
 void
-CanvasRenderingContext2D::ClearTarget(bool aRetainBuffer)
+CanvasRenderingContext2D::ClearTarget()
 {
-  RefPtr<PersistentBufferProvider> provider = mBufferProvider;
-  if (aRetainBuffer && provider) {
-    // We should reset the buffer data before reusing the buffer.
-    if (mTarget) {
-      mTarget->SetTransform(Matrix());
-    }
-    ClearRect(0, 0, mWidth, mHeight);
-  }
-
   Reset();
-
-  if (aRetainBuffer) {
-    mBufferProvider = provider;
-  }
 
   mResetLayer = true;
 
@@ -4266,7 +4275,6 @@ CanvasRenderingContext2D::DrawOrMeasureText(const nsAString& aRawText,
 
   // calls bidi algo twice since it needs the full text width and the
   // bounding boxes before rendering anything
-  nsBidi bidiEngine;
   rv = nsBidiPresUtils::ProcessText(textToDraw.get(),
                                     textToDraw.Length(),
                                     isRTL ? NSBIDI_RTL : NSBIDI_LTR,
@@ -4276,7 +4284,7 @@ CanvasRenderingContext2D::DrawOrMeasureText(const nsAString& aRawText,
                                     nullptr,
                                     0,
                                     &totalWidthCoord,
-                                    &bidiEngine);
+                                    &mBidiEngine);
   if (NS_FAILED(rv)) {
     return rv;
   }
@@ -4391,7 +4399,7 @@ CanvasRenderingContext2D::DrawOrMeasureText(const nsAString& aRawText,
                                     nullptr,
                                     0,
                                     nullptr,
-                                    &bidiEngine);
+                                    &mBidiEngine);
 
 
   mTarget->SetTransform(oldTransform);
@@ -5098,7 +5106,7 @@ CanvasRenderingContext2D::DrawDirectlyToCanvas(
   uint32_t modifiedFlags = aImage.mDrawingFlags | imgIContainer::FLAG_CLAMP;
 
   CSSIntSize sz(scaledImageSize.width, scaledImageSize.height); // XXX hmm is scaledImageSize really in CSS pixels?
-  SVGImageContext svgContext(sz, Nothing(), CurrentState().globalAlpha);
+  SVGImageContext svgContext(Some(sz), Nothing(), CurrentState().globalAlpha);
 
   auto result = aImage.mImgContainer->
     Draw(context, scaledImageSize,
@@ -5535,52 +5543,13 @@ CanvasRenderingContext2D::GetImageDataArray(JSContext* aCx,
     uint8_t* dst = data + dstWriteRect.y * (aWidth * 4) + dstWriteRect.x * 4;
 
     if (mOpaque) {
-      for (int32_t j = 0; j < dstWriteRect.height; ++j) {
-        for (int32_t i = 0; i < dstWriteRect.width; ++i) {
-          // XXX Is there some useful swizzle MMX we can use here?
-#if MOZ_LITTLE_ENDIAN
-          uint8_t b = *src++;
-          uint8_t g = *src++;
-          uint8_t r = *src++;
-          src++;
-#else
-          src++;
-          uint8_t r = *src++;
-          uint8_t g = *src++;
-          uint8_t b = *src++;
-#endif
-          *dst++ = r;
-          *dst++ = g;
-          *dst++ = b;
-          *dst++ = 255;
-        }
-        src += srcStride - (dstWriteRect.width * 4);
-        dst += (aWidth * 4) - (dstWriteRect.width * 4);
-      }
+      SwizzleData(src, srcStride, SurfaceFormat::X8R8G8B8_UINT32,
+                  dst, aWidth * 4, SurfaceFormat::R8G8B8A8,
+                  dstWriteRect.Size());
     } else {
-      for (int32_t j = 0; j < dstWriteRect.height; ++j) {
-        for (int32_t i = 0; i < dstWriteRect.width; ++i) {
-          // XXX Is there some useful swizzle MMX we can use here?
-#if MOZ_LITTLE_ENDIAN
-          uint8_t b = *src++;
-          uint8_t g = *src++;
-          uint8_t r = *src++;
-          uint8_t a = *src++;
-#else
-          uint8_t a = *src++;
-          uint8_t r = *src++;
-          uint8_t g = *src++;
-          uint8_t b = *src++;
-#endif
-          // Convert to non-premultiplied color
-          *dst++ = gfxUtils::sUnpremultiplyTable[a * 256 + r];
-          *dst++ = gfxUtils::sUnpremultiplyTable[a * 256 + g];
-          *dst++ = gfxUtils::sUnpremultiplyTable[a * 256 + b];
-          *dst++ = a;
-        }
-        src += srcStride - (dstWriteRect.width * 4);
-        dst += (aWidth * 4) - (dstWriteRect.width * 4);
-      }
+      UnpremultiplyData(src, srcStride, SurfaceFormat::A8R8G8B8_UINT32,
+                        dst, aWidth * 4, SurfaceFormat::R8G8B8A8,
+                        dstWriteRect.Size());
     }
   }
 
@@ -5716,66 +5685,6 @@ CanvasRenderingContext2D::PutImageData_explicit(int32_t aX, int32_t aY, uint32_t
     return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
 
-  uint32_t copyWidth = dirtyRect.Width();
-  uint32_t copyHeight = dirtyRect.Height();
-  RefPtr<DataSourceSurface> sourceSurface =
-    gfx::Factory::CreateDataSourceSurface(gfx::IntSize(copyWidth, copyHeight),
-                                          SurfaceFormat::B8G8R8A8,
-                                          false);
-  // In certain scenarios, requesting larger than 8k image fails.  Bug 803568
-  // covers the details of how to run into it, but the full detailed
-  // investigation hasn't been done to determine the underlying cause.  We
-  // will just handle the failure to allocate the surface to avoid a crash.
-  if (!sourceSurface) {
-    return NS_ERROR_FAILURE;
-  }
-
-  uint8_t *dstLine = sourceSurface->GetData();
-  if (!dstLine) {
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
-  int32_t dstStride = sourceSurface->Stride();
-
-  uint32_t copyX = dirtyRect.x - aX;
-  uint32_t copyY = dirtyRect.y - aY;
-  uint8_t* srcLine = aArray->Data() + copyY * (aW * 4) + copyX * 4;
-  // For opaque canvases, we must still premultiply the RGB components, but write the alpha as opaque.
-  uint8_t alphaMask = mOpaque ? 255 : 0;
-#if 0
-  printf("PutImageData_explicit: dirty x=%d y=%d w=%d h=%d copy x=%d y=%d w=%d h=%d ext x=%d y=%d w=%d h=%d\n",
-       dirtyRect.x, dirtyRect.y, copyWidth, copyHeight,
-       copyX, copyY, copyWidth, copyHeight,
-       x, y, w, h);
-#endif
-  for (uint32_t j = 0; j < copyHeight; j++) {
-    uint8_t *src = srcLine;
-    uint8_t *dst = dstLine;
-    for (uint32_t i = 0; i < copyWidth; i++) {
-      uint8_t r = *src++;
-      uint8_t g = *src++;
-      uint8_t b = *src++;
-      uint8_t a = *src++;
-
-      // Convert to premultiplied color (losslessly if the input came from getImageData)
-#if MOZ_LITTLE_ENDIAN
-      *dst++ = gfxUtils::sPremultiplyTable[a * 256 + b];
-      *dst++ = gfxUtils::sPremultiplyTable[a * 256 + g];
-      *dst++ = gfxUtils::sPremultiplyTable[a * 256 + r];
-      *dst++ = a | alphaMask;
-#else
-      *dst++ = a | alphaMask;
-      *dst++ = gfxUtils::sPremultiplyTable[a * 256 + r];
-      *dst++ = gfxUtils::sPremultiplyTable[a * 256 + g];
-      *dst++ = gfxUtils::sPremultiplyTable[a * 256 + b];
-#endif
-    }
-    srcLine += aW * 4;
-    // Note that dstLine + dstStride might not be the same as "dst" here,
-    // depending the width we asked for and the width the underlying machinery
-    // decided to actually allocate (e.g. to give each row nice alignment).
-    dstLine += dstStride;
-  }
-
   // The canvas spec says that the current path, transformation matrix, shadow attributes,
   // global alpha, the clipping region, and global composition operator must not affect the
   // getImageData() and putImageData() methods.
@@ -5786,10 +5695,48 @@ CanvasRenderingContext2D::PutImageData_explicit(int32_t aX, int32_t aY, uint32_t
     return NS_ERROR_FAILURE;
   }
 
-  mTarget->CopySurface(sourceSurface,
-                       IntRect(0, 0,
-                               dirtyRect.width, dirtyRect.height),
-                       IntPoint(dirtyRect.x, dirtyRect.y));
+  RefPtr<DataSourceSurface> sourceSurface;
+  uint8_t* lockedBits = nullptr;
+  uint8_t* dstData;
+  IntSize dstSize;
+  int32_t dstStride;
+  SurfaceFormat dstFormat;
+  if (mTarget->LockBits(&lockedBits, &dstSize, &dstStride, &dstFormat)) {
+    dstData = lockedBits + dirtyRect.y * dstStride + dirtyRect.x * 4;
+  } else {
+    sourceSurface =
+      Factory::CreateDataSourceSurface(dirtyRect.Size(),
+                                       SurfaceFormat::B8G8R8A8,
+                                       false);
+
+    // In certain scenarios, requesting larger than 8k image fails.  Bug 803568
+    // covers the details of how to run into it, but the full detailed
+    // investigation hasn't been done to determine the underlying cause.  We
+    // will just handle the failure to allocate the surface to avoid a crash.
+    if (!sourceSurface) {
+      return NS_ERROR_FAILURE;
+    }
+    dstData = sourceSurface->GetData();
+    if (!dstData) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
+    dstStride = sourceSurface->Stride();
+    dstFormat = sourceSurface->GetFormat();
+  }
+
+  IntRect srcRect = dirtyRect - IntPoint(aX, aY);
+  uint8_t* srcData = aArray->Data() + srcRect.y * (aW * 4) + srcRect.x * 4;
+
+  PremultiplyData(srcData, aW * 4, SurfaceFormat::R8G8B8A8,
+                  dstData, dstStride,
+                  mOpaque ? SurfaceFormat::X8R8G8B8_UINT32 : SurfaceFormat::A8R8G8B8_UINT32,
+                  dirtyRect.Size());
+
+  if (lockedBits) {
+    mTarget->ReleaseBits(lockedBits);
+  } else if (sourceSurface) {
+    mTarget->CopySurface(sourceSurface, dirtyRect - dirtyRect.TopLeft(), dirtyRect.TopLeft());
+  }
 
   Redraw(gfx::Rect(dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height));
 

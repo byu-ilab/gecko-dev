@@ -101,7 +101,7 @@ struct PhaseInfo
     Phase index;
     const char* name;
     Phase parent;
-    const uint8_t telemetryBucket;
+    uint8_t telemetryBucket;
 };
 
 // The zeroth entry in the timing arrays is used for phases that have a
@@ -164,7 +164,7 @@ static const PhaseInfo phases[] = {
             { PHASE_SWEEP_MARK_GRAY, "Mark Gray", PHASE_SWEEP_MARK, 15 },
             { PHASE_SWEEP_MARK_GRAY_WEAK, "Mark Gray and Weak", PHASE_SWEEP_MARK, 16 },
         { PHASE_FINALIZE_START, "Finalize Start Callbacks", PHASE_SWEEP, 17 },
-            { PHASE_WEAK_ZONEGROUP_CALLBACK, "Per-Slice Weak Callback", PHASE_FINALIZE_START, 57 },
+            { PHASE_WEAK_ZONES_CALLBACK, "Per-Slice Weak Callback", PHASE_FINALIZE_START, 57 },
             { PHASE_WEAK_COMPARTMENT_CALLBACK, "Per-Compartment Weak Callback", PHASE_FINALIZE_START, 58 },
         { PHASE_SWEEP_ATOMS, "Sweep Atoms", PHASE_SWEEP, 18 },
         { PHASE_SWEEP_COMPARTMENTS, "Sweep Compartments", PHASE_SWEEP, 20 },
@@ -1405,7 +1405,12 @@ Statistics::maybePrintProfileHeaders()
     static int printedHeader = 0;
     if ((printedHeader++ % 200) == 0) {
         printProfileHeader();
-        runtime->zoneGroupFromMainThread()->nursery().printProfileHeader();
+        for (ZoneGroupsIter group(runtime); !group.done(); group.next()) {
+            if (group->nursery().enableProfiling()) {
+                Nursery::printProfileHeader();
+                break;
+            }
+        }
     }
 }
 

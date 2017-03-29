@@ -38,7 +38,16 @@ function isAncestorOrSelf(target, node) {
 }
 
 // WeakMap[Extension -> BrowserAction]
-var browserActionMap = new WeakMap();
+const browserActionMap = new WeakMap();
+
+XPCOMUtils.defineLazyGetter(this, "browserAreas", () => {
+  return {
+    "navbar": CustomizableUI.AREA_NAVBAR,
+    "menupanel": CustomizableUI.AREA_PANEL,
+    "tabstrip": CustomizableUI.AREA_TABSTRIP,
+    "personaltoolbar": CustomizableUI.AREA_BOOKMARKS,
+  };
+});
 
 // Responsible for the browser_action section of the manifest as well
 // as the associated popup.
@@ -62,6 +71,7 @@ function BrowserAction(options, extension) {
     badgeBackgroundColor: null,
     icon: IconDetails.normalize({path: options.default_icon}, extension),
     popup: options.default_popup || "",
+    area: browserAreas[options.default_area || "navbar"],
   };
 
   this.browserStyle = options.browser_style || false;
@@ -85,7 +95,7 @@ BrowserAction.prototype = {
       removable: true,
       label: this.defaults.title || this.extension.name,
       tooltiptext: this.defaults.title || "",
-      defaultArea: CustomizableUI.AREA_NAVBAR,
+      defaultArea: this.defaults.area,
 
       onBeforeCreated: document => {
         let view = document.createElementNS(XUL_NS, "panelview");
@@ -112,6 +122,8 @@ BrowserAction.prototype = {
         node.setAttribute("constrain-size", "true");
 
         node.onmousedown = event => this.handleEvent(event);
+        node.onmouseover = event => this.handleEvent(event);
+        node.onmouseout = event => this.handleEvent(event);
 
         this.updateButton(node, this.defaults);
       },
@@ -199,10 +211,10 @@ BrowserAction.prototype = {
           let popupURL = this.getProperty(tab, "popup");
           let enabled = this.getProperty(tab, "enabled");
 
-          if (popupURL && enabled) {
+          if (popupURL && enabled && (this.pendingPopup || !ViewPopup.for(this.extension, window))) {
             // Add permission for the active tab so it will exist for the popup.
             // Store the tab to revoke the permission during clearPopup.
-            if (!this.pendingPopup && !this.tabManager.hasActiveTabPermission(tab)) {
+            if (!this.tabManager.hasActiveTabPermission(tab)) {
               this.tabManager.addActiveTabPermission(tab);
               this.tabToRevokeDuringClearPopup = tab;
             }
@@ -221,7 +233,7 @@ BrowserAction.prototype = {
           // If we have a pending pre-loaded popup, cancel it after we've waited
           // long enough that we can be relatively certain it won't be opening.
           if (this.pendingPopup) {
-            let {node} = this.widget.forWindow(window);
+            let node = window.gBrowser && this.widget.forWindow(window).node;
             if (isAncestorOrSelf(node, event.originalTarget)) {
               this.pendingPopupTimeout = setTimeout(() => this.clearPopup(),
                                                     POPUP_PRELOAD_TIMEOUT_MS);
@@ -231,6 +243,26 @@ BrowserAction.prototype = {
           }
         }
         break;
+
+      case "mouseover": {
+        // Begin pre-loading the browser for the popup, so it's more likely to
+        // be ready by the time we get a complete click.
+        let tab = window.gBrowser.selectedTab;
+        let popupURL = this.getProperty(tab, "popup");
+        let enabled = this.getProperty(tab, "enabled");
+
+        if (popupURL && enabled && (this.pendingPopup || !ViewPopup.for(this.extension, window))) {
+          this.pendingPopup = this.getPopup(window, popupURL, true);
+        }
+        break;
+      }
+
+      case "mouseout":
+        if (this.pendingPopup) {
+          this.clearPopup();
+        }
+        break;
+
 
       case "popupshowing":
         const menu = event.target;
@@ -261,22 +293,28 @@ BrowserAction.prototype = {
    *        The browser window in which to create the popup.
    * @param {string} popupURL
    *        The URL to load into the popup.
+   * @param {boolean} [blockParser = false]
+   *        True if the HTML parser should initially be blocked.
    * @returns {ViewPopup}
    */
-  getPopup(window, popupURL) {
+  getPopup(window, popupURL, blockParser = false) {
     this.clearPopupTimeout();
     let {pendingPopup} = this;
     this.pendingPopup = null;
 
     if (pendingPopup) {
       if (pendingPopup.window === window && pendingPopup.popupURL === popupURL) {
+        if (!this.blockParser) {
+          pendingPopup.unblockParser();
+        }
+
         return pendingPopup;
       }
       pendingPopup.destroy();
     }
 
     let fixedWidth = this.widget.areaType == CustomizableUI.TYPE_MENU_PANEL;
-    return new ViewPopup(this.extension, window, popupURL, this.browserStyle, fixedWidth);
+    return new ViewPopup(this.extension, window, popupURL, this.browserStyle, fixedWidth, blockParser);
   },
 
   /**
@@ -355,17 +393,13 @@ BrowserAction.prototype = {
       }
     }
 
-    // These URLs should already be properly escaped, but make doubly sure CSS
-    // string escape characters are escaped here, since they could lead to a
-    // sandbox break.
-    let escape = str => str.replace(/[\\\s"]/g, encodeURIComponent);
-
-    let getIcon = size => escape(IconDetails.getPreferredIcon(tabData.icon, this.extension, size).icon);
+    let getIcon = size => IconDetails.escapeUrl(
+      IconDetails.getPreferredIcon(tabData.icon, this.extension, size).icon);
 
     node.setAttribute("style", `
       --webextension-menupanel-image: url("${getIcon(32)}");
       --webextension-menupanel-image-2x: url("${getIcon(64)}");
-      --webextension-toolbar-image: url("${escape(icon)}");
+      --webextension-toolbar-image: url("${IconDetails.escapeUrl(icon)}");
       --webextension-toolbar-image-2x: url("${getIcon(baseSize * 2)}");
     `);
   },

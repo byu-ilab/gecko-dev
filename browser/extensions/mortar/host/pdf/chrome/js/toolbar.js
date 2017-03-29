@@ -197,6 +197,10 @@ class Toolbar {
       case 'secondaryDownload':
         this._viewport.save();
         break;
+      case 'print':
+      case 'secondaryPrint':
+        this._viewport.print();
+        break;
       case 'pageRotateCw':
         this._viewport.rotateClockwise();
         break;
@@ -209,6 +213,10 @@ class Toolbar {
         break;
       case 'secondaryToolbarToggle':
         this._secondaryToolbar.toggle();
+        break;
+      case 'viewBookmark':
+      case 'secondaryViewBookmark':
+        this._viewport.createBookmarkHash();
         break;
     }
   }

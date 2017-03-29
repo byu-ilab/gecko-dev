@@ -35,17 +35,17 @@ class GenericPrinter
     GenericPrinter();
 
   public:
-    // Puts |len| characters from |s| at the current position and return an offset to
-    // the beginning of this new data.
-    virtual int put(const char* s, size_t len) = 0;
+    // Puts |len| characters from |s| at the current position and
+    // return true on success, false on failure.
+    virtual bool put(const char* s, size_t len) = 0;
 
-    inline int put(const char* s) {
+    inline bool put(const char* s) {
         return put(s, strlen(s));
     }
 
     // Prints a formatted string into the buffer.
-    virtual int printf(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3);
-    virtual int vprintf(const char* fmt, va_list ap);
+    bool printf(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3);
+    bool vprintf(const char* fmt, va_list ap);
 
     // Report that a string operation failed to get the memory it requested. The
     // first call to this function calls JS_ReportOutOfMemory, and sets this
@@ -108,20 +108,17 @@ class Sprinter final : public GenericPrinter
     // internal content. The caller *must* completely fill this space on success.
     char* reserve(size_t len);
 
-    // Puts |len| characters from |s| at the current position and return an offset to
-    // the beginning of this new data.
-    virtual int put(const char* s, size_t len) override;
-    using GenericPrinter::put; // pick up |inline int put(const char* s);|
+    // Puts |len| characters from |s| at the current position and
+    // return true on success, false on failure.
+    virtual bool put(const char* s, size_t len) override;
+    using GenericPrinter::put; // pick up |inline bool put(const char* s);|
 
     // Format the given format/arguments as if by JS_vsmprintf, then put it.
     // Return true on success, else return false and report an error (typically
     // OOM).
     MOZ_MUST_USE bool jsprintf(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3);
 
-    // Prints a formatted string into the buffer.
-    virtual int vprintf(const char* fmt, va_list ap) override;
-
-    int putString(JSString* str);
+    bool putString(JSString* str);
 
     ptrdiff_t getOffset() const;
 
@@ -152,14 +149,10 @@ class Fprinter final : public GenericPrinter
     void flush();
     void finish();
 
-    // Puts |len| characters from |s| at the current position and return an
-    // offset to the beginning of this new data.
-    virtual int put(const char* s, size_t len) override;
-    using GenericPrinter::put; // pick up |inline int put(const char* s);|
-
-    // Prints a formatted string into the buffer.
-    virtual int printf(const char* fmt, ...) override MOZ_FORMAT_PRINTF(2, 3);
-    virtual int vprintf(const char* fmt, va_list ap) override;
+    // Puts |len| characters from |s| at the current position and
+    // return true on success, false on failure.
+    virtual bool put(const char* s, size_t len) override;
+    using GenericPrinter::put; // pick up |inline bool put(const char* s);|
 };
 
 // LSprinter, is similar to Sprinter except that instead of using an
@@ -198,14 +191,10 @@ class LSprinter final : public GenericPrinter
     // Drop the current string, and let them be free with the LifoAlloc.
     void clear();
 
-    // Puts |len| characters from |s| at the current position and return an
-    // offset to the beginning of this new data.
-    virtual int put(const char* s, size_t len) override;
-    using GenericPrinter::put; // pick up |inline int put(const char* s);|
-
-    // Prints a formatted string into the buffer.
-    virtual int printf(const char* fmt, ...) override MOZ_FORMAT_PRINTF(2, 3);
-    virtual int vprintf(const char* fmt, va_list ap) override;
+    // Puts |len| characters from |s| at the current position and
+    // return true on success, false on failure.
+    virtual bool put(const char* s, size_t len) override;
+    using GenericPrinter::put; // pick up |inline bool put(const char* s);|
 
     // Report that a string operation failed to get the memory it requested. The
     // first call to this function calls JS_ReportOutOfMemory, and sets this

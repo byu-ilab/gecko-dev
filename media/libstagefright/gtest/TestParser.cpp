@@ -72,7 +72,6 @@ TEST(stagefright_MP4Metadata, EmptyStream)
 {
   RefPtr<Stream> stream = new TestStream(nullptr, 0);
 
-  EXPECT_FALSE(MP4Metadata::HasCompleteMetadata(stream));
   RefPtr<MediaByteBuffer> metadataBuffer = MP4Metadata::Metadata(stream);
   EXPECT_FALSE(metadataBuffer);
 
@@ -213,7 +212,6 @@ TEST(stagefright_MPEG4Metadata, test_case_mp4)
     ASSERT_FALSE(buffer.IsEmpty());
     RefPtr<Stream> stream = new TestStream(buffer.Elements(), buffer.Length());
 
-    EXPECT_TRUE(MP4Metadata::HasCompleteMetadata(stream));
     RefPtr<MediaByteBuffer> metadataBuffer = MP4Metadata::Metadata(stream);
     EXPECT_TRUE(metadataBuffer);
 
@@ -238,11 +236,14 @@ TEST(stagefright_MPEG4Metadata, test_case_mp4)
       EXPECT_EQ(testFiles[test].mVideoDuration, videoInfo->mDuration);
       EXPECT_EQ(testFiles[test].mWidth, videoInfo->mDisplay.width);
       EXPECT_EQ(testFiles[test].mHeight, videoInfo->mDisplay.height);
-      FallibleTArray<mp4_demuxer::Index::Indice> indices;
-      EXPECT_TRUE(metadata.ReadTrackIndex(indices, videoInfo->mTrackId));
-      for (const mp4_demuxer::Index::Indice& indice : indices) {
-        EXPECT_TRUE(indice.start_offset <= indice.end_offset);
-        EXPECT_TRUE(indice.start_composition <= indice.end_composition);
+
+      UniquePtr<IndiceWrapper> indices = metadata.GetTrackIndice(videoInfo->mTrackId);
+      EXPECT_TRUE(!!indices);
+      for (size_t i = 0; i < indices->Length(); i++) {
+        Index::Indice data;
+        EXPECT_TRUE(indices->GetIndice(i, data));
+        EXPECT_TRUE(data.start_offset <= data.end_offset);
+        EXPECT_TRUE(data.start_composition <= data.end_composition);
       }
     }
     trackInfo = metadata.GetTrackInfo(TrackInfo::kAudioTrack, 0);
@@ -256,11 +257,14 @@ TEST(stagefright_MPEG4Metadata, test_case_mp4)
       EXPECT_TRUE(audioInfo->IsAudio());
       EXPECT_EQ(testFiles[test].mAudioDuration, audioInfo->mDuration);
       EXPECT_EQ(testFiles[test].mAudioProfile, audioInfo->mProfile);
-      FallibleTArray<mp4_demuxer::Index::Indice> indices;
-      EXPECT_TRUE(metadata.ReadTrackIndex(indices, audioInfo->mTrackId));
-      for (const mp4_demuxer::Index::Indice& indice : indices) {
-        EXPECT_TRUE(indice.start_offset <= indice.end_offset);
-        EXPECT_TRUE(indice.start_composition <= indice.end_composition);
+
+      UniquePtr<IndiceWrapper> indices = metadata.GetTrackIndice(audioInfo->mTrackId);
+      EXPECT_TRUE(!!indices);
+      for (size_t i = 0; i < indices->Length(); i++) {
+        Index::Indice data;
+        EXPECT_TRUE(indices->GetIndice(i, data));
+        EXPECT_TRUE(data.start_offset <= data.end_offset);
+        EXPECT_TRUE(data.start_composition <= data.end_composition);
       }
     }
     EXPECT_FALSE(metadata.GetTrackInfo(TrackInfo::kTextTrack, 0));
@@ -289,7 +293,6 @@ TEST(stagefright_MPEG4Metadata, test_case_mp4_subsets)
         RefPtr<TestStream> stream =
           new TestStream(buffer.Elements() + offset, size);
 
-        MP4Metadata::HasCompleteMetadata(stream);
         RefPtr<MediaByteBuffer> metadataBuffer = MP4Metadata::Metadata(stream);
         MP4Metadata metadata(stream);
 
@@ -465,7 +468,6 @@ TEST(stagefright_MP4Metadata, EmptyCTTS)
   buffer->AppendElements(media_libstagefright_gtest_video_init_mp4, media_libstagefright_gtest_video_init_mp4_len);
   RefPtr<BufferStream> stream = new BufferStream(buffer);
 
-  EXPECT_TRUE(MP4Metadata::HasCompleteMetadata(stream));
   RefPtr<MediaByteBuffer> metadataBuffer = MP4Metadata::Metadata(stream);
   EXPECT_TRUE(metadataBuffer);
 

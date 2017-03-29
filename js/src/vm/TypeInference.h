@@ -34,9 +34,9 @@ namespace jit {
     class TempAllocator;
 } // namespace jit
 
-struct TypeZone;
 class TypeConstraint;
 class TypeNewScript;
+class TypeZone;
 class CompilerConstraintList;
 class HeapTypeSetKey;
 
@@ -402,7 +402,7 @@ class TypeSet
     void print(FILE* fp = stderr);
 
     /* Whether this set contains a specific type. */
-    inline bool hasType(Type type) const;
+    MOZ_ALWAYS_INLINE bool hasType(Type type) const;
 
     TypeFlags baseFlags() const { return flags & TYPE_FLAG_BASE_MASK; }
     bool unknown() const { return !!(flags & TYPE_FLAG_UNKNOWN); }
@@ -543,6 +543,11 @@ static const uintptr_t BaseTypeInferenceMagic = 0xa1a2b3b4c5c6d7d8;
 static const uintptr_t TypeConstraintMagic = BaseTypeInferenceMagic + 1;
 static const uintptr_t ConstraintTypeSetMagic = BaseTypeInferenceMagic + 2;
 
+#ifdef JS_CRASH_DIAGNOSTICS
+extern void
+ReportMagicWordFailure(uintptr_t actual, uintptr_t expected);
+#endif
+
 /*
  * A constraint which listens to additions to a type set and propagates those
  * changes to other type sets.
@@ -567,7 +572,8 @@ class TypeConstraint
 
     void checkMagic() const {
 #ifdef JS_CRASH_DIAGNOSTICS
-        MOZ_RELEASE_ASSERT(magic_ == TypeConstraintMagic);
+        if (MOZ_UNLIKELY(magic_ != TypeConstraintMagic))
+            ReportMagicWordFailure(magic_, TypeConstraintMagic);
 #endif
     }
 
@@ -669,7 +675,8 @@ class ConstraintTypeSet : public TypeSet
 
     void checkMagic() const {
 #ifdef JS_CRASH_DIAGNOSTICS
-        MOZ_RELEASE_ASSERT(magic_ == ConstraintTypeSetMagic);
+        if (MOZ_UNLIKELY(magic_ != ConstraintTypeSetMagic))
+            ReportMagicWordFailure(magic_, ConstraintTypeSetMagic);
 #endif
     }
 
@@ -1179,10 +1186,10 @@ FinishDefinitePropertiesAnalysis(JSContext* cx, CompilerConstraintList* constrai
 
 // Representation of a heap type property which may or may not be instantiated.
 // Heap properties for singleton types are instantiated lazily as they are used
-// by the compiler, but this is only done on the main thread. If we are
+// by the compiler, but this is only done on the active thread. If we are
 // compiling off thread and use a property which has not yet been instantiated,
 // it will be treated as empty and non-configured and will be instantiated when
-// rejoining to the main thread. If it is in fact not empty, the compilation
+// rejoining to the active thread. If it is in fact not empty, the compilation
 // will fail; to avoid this, we try to instantiate singleton property types
 // during generation of baseline caches.
 class HeapTypeSetKey
@@ -1315,14 +1322,15 @@ typedef Vector<RecompileInfo, 1, SystemAllocPolicy> RecompileInfoVector;
 
 struct AutoEnterAnalysis;
 
-struct TypeZone
+class TypeZone
 {
     JS::Zone* const zone_;
 
     /* Pool for type information in this zone. */
     static const size_t TYPE_LIFO_ALLOC_PRIMARY_CHUNK_SIZE = 8 * 1024;
-    ZoneGroupData<LifoAlloc> typeLifoAlloc;
+    ZoneGroupData<LifoAlloc> typeLifoAlloc_;
 
+  public:
     // Current generation for sweeping.
     ZoneGroupOrGCTaskOrIonCompileData<uint32_t> generation;
 
@@ -1355,6 +1363,13 @@ struct TypeZone
     ~TypeZone();
 
     JS::Zone* zone() const { return zone_; }
+
+    LifoAlloc& typeLifoAlloc() {
+#ifdef JS_CRASH_DIAGNOSTICS
+        MOZ_RELEASE_ASSERT(CurrentThreadCanAccessZone(zone_));
+#endif
+        return typeLifoAlloc_.ref();
+    }
 
     void beginSweep(FreeOp* fop, bool releaseTypes, AutoClearTypeInferenceStateOnOOM& oom);
     void endSweep(JSRuntime* rt);

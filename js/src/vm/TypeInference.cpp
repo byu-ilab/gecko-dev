@@ -7,6 +7,7 @@
 #include "vm/TypeInference-inl.h"
 
 #include "mozilla/DebugOnly.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/PodOperations.h"
 #include "mozilla/SizePrintfMacros.h"
@@ -514,7 +515,7 @@ ConstraintTypeSet::addConstraint(JSContext* cx, TypeConstraint* constraint, bool
         return false;
     }
 
-    MOZ_ASSERT(cx->zone()->types.activeAnalysis);
+    MOZ_RELEASE_ASSERT(cx->zone()->types.activeAnalysis);
     MOZ_ASSERT(CompartmentsMatch(maybeCompartment(), constraint->maybeCompartment()));
 
     InferSpew(ISpewOps, "addConstraint: %sT%p%s %sC%p%s %s",
@@ -689,7 +690,7 @@ ConstraintTypeSet::addType(JSContext* cx, Type type)
 {
     checkMagic();
 
-    MOZ_ASSERT(cx->zone()->types.activeAnalysis);
+    MOZ_RELEASE_ASSERT(cx->zone()->types.activeAnalysis);
 
     if (hasType(type))
         return;
@@ -1022,21 +1023,21 @@ TypeSet::intersectSets(TemporaryTypeSet* a, TemporaryTypeSet* b, LifoAlloc* allo
 // Constraints generated during Ion compilation capture assumptions made about
 // heap properties that will trigger invalidation of the resulting Ion code if
 // the constraint is violated. Constraints can only be attached to type sets on
-// the main thread, so to allow compilation to occur almost entirely off thread
+// the active thread, so to allow compilation to occur almost entirely off thread
 // the generation is split into two phases.
 //
 // During compilation, CompilerConstraint values are constructed in a list,
 // recording the heap property type set which was read from and its expected
 // contents, along with the assumption made about those contents.
 //
-// At the end of compilation, when linking the result on the main thread, the
+// At the end of compilation, when linking the result on the active thread, the
 // list of compiler constraints are read and converted to type constraints and
 // attached to the type sets. If the property type sets have changed so that the
 // assumptions no longer hold then the compilation is aborted and its result
 // discarded.
 
 // Superclass of all constraints generated during Ion compilation. These may
-// be allocated off the main thread, using the current JIT context's allocator.
+// be allocated off thread, using the current JIT context's allocator.
 class CompilerConstraint
 {
   public:
@@ -1045,7 +1046,7 @@ class CompilerConstraint
 
     // Contents of the property at the point when the query was performed. This
     // may differ from the actual property types later in compilation as the
-    // main thread performs side effects.
+    // active thread performs side effects.
     TemporaryTypeSet* expected;
 
     CompilerConstraint(LifoAlloc* alloc, const HeapTypeSetKey& property)
@@ -1225,7 +1226,7 @@ class TypeCompilerConstraint : public TypeConstraint
     bool sweep(TypeZone& zone, TypeConstraint** res) {
         if (data.shouldSweep() || compilation.shouldSweep(zone))
             return false;
-        *res = zone.typeLifoAlloc.ref().new_<TypeCompilerConstraint<T> >(compilation, data);
+        *res = zone.typeLifoAlloc().new_<TypeCompilerConstraint<T> >(compilation, data);
         return true;
     }
 
@@ -1310,7 +1311,7 @@ TypeSet::ObjectKey::ensureTrackedProperty(JSContext* cx, jsid id)
 {
     // If we are accessing a lazily defined property which actually exists in
     // the VM and has not been instantiated yet, instantiate it now if we are
-    // on the main thread and able to do so.
+    // on the active thread and able to do so.
     if (!JSID_IS_VOID(id) && !JSID_IS_EMPTY(id)) {
         MOZ_ASSERT(CurrentThreadCanAccessRuntime(cx->runtime()));
         if (isSingleton()) {
@@ -1342,7 +1343,7 @@ js::EnsureTrackPropertyTypes(JSContext* cx, JSObject* obj, jsid id)
         }
     }
 
-    MOZ_ASSERT(obj->group()->unknownProperties() || TrackPropertyTypes(cx, obj, id));
+    MOZ_ASSERT(obj->group()->unknownProperties() || TrackPropertyTypes(obj, id));
 }
 
 bool
@@ -1414,7 +1415,7 @@ class TypeConstraintFreezeStack : public TypeConstraint
     bool sweep(TypeZone& zone, TypeConstraint** res) {
         if (IsAboutToBeFinalizedUnbarriered(&script_))
             return false;
-        *res = zone.typeLifoAlloc.ref().new_<TypeConstraintFreezeStack>(script_);
+        *res = zone.typeLifoAlloc().new_<TypeConstraintFreezeStack>(script_);
         return true;
     }
 
@@ -1534,7 +1535,7 @@ js::InvalidateCompilerOutputsForScript(JSContext* cx, HandleScript script)
 static void
 CheckDefinitePropertiesTypeSet(JSContext* cx, TemporaryTypeSet* frozen, StackTypeSet* actual)
 {
-    // The definite properties analysis happens on the main thread, so no new
+    // The definite properties analysis happens on the active thread, so no new
     // types can have been added to actual. The analysis may have updated the
     // contents of |frozen| though with new speculative types, and these need
     // to be reflected in |actual| for AddClearDefiniteFunctionUsesInScript
@@ -2606,6 +2607,15 @@ TypeZone::addPendingRecompile(JSContext* cx, JSScript* script)
         ObjectStateChange(cx, script->functionNonDelazifying()->group(), false);
 }
 
+#ifdef JS_CRASH_DIAGNOSTICS
+void
+js::ReportMagicWordFailure(uintptr_t actual, uintptr_t expected)
+{
+    MOZ_CRASH_UNSAFE_PRINTF("Got 0x%" PRIxPTR " expected magic word 0x%" PRIxPTR,
+                            actual, expected);
+}
+#endif
+
 void
 js::PrintTypes(JSContext* cx, JSCompartment* comp, bool force)
 {
@@ -3068,7 +3078,7 @@ ObjectGroup::clearNewScript(JSContext* cx, ObjectGroup* replacement /* = nullptr
             }
         }
     } else {
-        // Threads off the main thread are not allowed to run scripts.
+        // Helper threads are not allowed to run scripts.
         MOZ_ASSERT(!cx->activation());
     }
 
@@ -3170,7 +3180,7 @@ class TypeConstraintClearDefiniteGetterSetter : public TypeConstraint
     bool sweep(TypeZone& zone, TypeConstraint** res) {
         if (IsAboutToBeFinalizedUnbarriered(&group))
             return false;
-        *res = zone.typeLifoAlloc.ref().new_<TypeConstraintClearDefiniteGetterSetter>(group);
+        *res = zone.typeLifoAlloc().new_<TypeConstraintClearDefiniteGetterSetter>(group);
         return true;
     }
 
@@ -3229,7 +3239,7 @@ class TypeConstraintClearDefiniteSingle : public TypeConstraint
     bool sweep(TypeZone& zone, TypeConstraint** res) {
         if (IsAboutToBeFinalizedUnbarriered(&group))
             return false;
-        *res = zone.typeLifoAlloc.ref().new_<TypeConstraintClearDefiniteSingle>(group);
+        *res = zone.typeLifoAlloc().new_<TypeConstraintClearDefiniteSingle>(group);
         return true;
     }
 
@@ -3658,7 +3668,7 @@ TypeNewScript::make(JSContext* cx, ObjectGroup* group, JSFunction* fun)
 TypeNewScript::makeNativeVersion(JSContext* cx, TypeNewScript* newScript,
                                  PlainObject* templateObject)
 {
-    MOZ_ASSERT(cx->zone()->types.activeAnalysis);
+    MOZ_RELEASE_ASSERT(cx->zone()->types.activeAnalysis);
 
     ScopedJSDeletePtr<TypeNewScript> nativeNewScript(cx->new_<TypeNewScript>());
     if (!nativeNewScript)
@@ -4147,7 +4157,7 @@ ConstraintTypeSet::trace(Zone* zone, JSTracer* trc)
             AutoEnterOOMUnsafeRegion oomUnsafe;
             ObjectKey** pentry =
                 TypeHashSet::Insert<ObjectKey*, ObjectKey, ObjectKey>
-                    (zone->types.typeLifoAlloc.ref(), objectSet, objectCount, key);
+                    (zone->types.typeLifoAlloc(), objectSet, objectCount, key);
             if (!pentry)
                 oomUnsafe.crash("ConstraintTypeSet::trace");
 
@@ -4201,7 +4211,7 @@ ConstraintTypeSet::sweep(Zone* zone, AutoClearTypeInferenceStateOnOOM& oom)
             if (!IsObjectKeyAboutToBeFinalized(&key)) {
                 ObjectKey** pentry =
                     TypeHashSet::Insert<ObjectKey*, ObjectKey, ObjectKey>
-                        (zone->types.typeLifoAlloc.ref(), objectSet, objectCount, key);
+                        (zone->types.typeLifoAlloc(), objectSet, objectCount, key);
                 if (pentry) {
                     *pentry = key;
                 } else {
@@ -4254,7 +4264,7 @@ ConstraintTypeSet::sweep(Zone* zone, AutoClearTypeInferenceStateOnOOM& oom)
         TypeConstraint* copy;
         if (constraint->sweep(zone->types, &copy)) {
             if (copy) {
-                MOZ_ASSERT(zone->types.typeLifoAlloc.ref().contains(copy));
+                MOZ_ASSERT(zone->types.typeLifoAlloc().contains(copy));
                 copy->setNext(constraintList_);
                 constraintList_ = copy;
             } else {
@@ -4309,7 +4319,7 @@ ObjectGroup::sweep(AutoClearTypeInferenceStateOnOOM* oom)
 
     if (maybeUnboxedLayout()) {
         // Remove unboxed layouts that are about to be finalized from the
-        // compartment wide list while we are still on the main thread.
+        // compartment wide list while we are still on the active thread.
         ObjectGroup* group = this;
         if (IsAboutToBeFinalizedUnbarriered(&group))
             unboxedLayout().detachFromCompartment();
@@ -4328,7 +4338,7 @@ ObjectGroup::sweep(AutoClearTypeInferenceStateOnOOM* oom)
     if (newScript())
         newScript()->sweep();
 
-    LifoAlloc& typeLifoAlloc = zone()->types.typeLifoAlloc.ref();
+    LifoAlloc& typeLifoAlloc = zone()->types.typeLifoAlloc();
 
     /*
      * Properties were allocated from the old arena, and need to be copied over
@@ -4467,7 +4477,7 @@ Zone::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                              size_t* shapeTables,
                              size_t* atomsMarkBitmaps)
 {
-    *typePool += types.typeLifoAlloc.ref().sizeOfExcludingThis(mallocSizeOf);
+    *typePool += types.typeLifoAlloc().sizeOfExcludingThis(mallocSizeOf);
     if (jitZone()) {
         *baselineStubsOptimized +=
             jitZone()->optimizedStubSpace()->sizeOfExcludingThis(mallocSizeOf);
@@ -4480,7 +4490,7 @@ Zone::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
 
 TypeZone::TypeZone(Zone* zone)
   : zone_(zone),
-    typeLifoAlloc(zone->group(), (size_t) TYPE_LIFO_ALLOC_PRIMARY_CHUNK_SIZE),
+    typeLifoAlloc_(zone->group(), (size_t) TYPE_LIFO_ALLOC_PRIMARY_CHUNK_SIZE),
     generation(zone->group(), 0),
     compilerOutputs(zone->group(), nullptr),
     sweepTypeLifoAlloc(zone->group(), (size_t) TYPE_LIFO_ALLOC_PRIMARY_CHUNK_SIZE),
@@ -4509,7 +4519,7 @@ TypeZone::beginSweep(FreeOp* fop, bool releaseTypes, AutoClearTypeInferenceState
 
     // Clear the analysis pool, but don't release its data yet. While sweeping
     // types any live data will be allocated into the pool.
-    sweepTypeLifoAlloc.ref().steal(&typeLifoAlloc.ref());
+    sweepTypeLifoAlloc.ref().steal(&typeLifoAlloc());
 
     // Sweep any invalid or dead compiler outputs, and keep track of the new
     // index for remaining live outputs.
@@ -4582,8 +4592,9 @@ AutoClearTypeInferenceStateOnOOM::~AutoClearTypeInferenceStateOnOOM()
     zone->types.setSweepingTypes(false);
 
     if (oom) {
-        JSRuntime* rt = zone->runtimeFromMainThread();
+        JSRuntime* rt = zone->runtimeFromActiveCooperatingThread();
         js::CancelOffThreadIonCompile(rt);
+        JSRuntime::AutoProhibitActiveContextChange apacc(rt);
         zone->setPreservingCode(false);
         zone->discardJitCode(rt->defaultFreeOp(), /* discardBaselineCode = */ false);
         zone->types.clearAllNewScriptsOnOOM();

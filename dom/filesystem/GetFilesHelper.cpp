@@ -7,6 +7,7 @@
 #include "GetFilesHelper.h"
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/FileBlobImpl.h"
 #include "nsProxyRelease.h"
 
 namespace mozilla {
@@ -277,17 +278,17 @@ GetFilesHelper::RunIO()
     return;
   }
 
-  nsAutoString path;
-  mErrorResult = file->GetLeafName(path);
+  nsAutoString leafName;
+  mErrorResult = file->GetLeafName(leafName);
   if (NS_WARN_IF(NS_FAILED(mErrorResult))) {
     return;
   }
 
-  if (path.IsEmpty()) {
-    path.AppendLiteral(FILESYSTEM_DOM_PATH_SEPARATOR_LITERAL);
-  }
+  nsAutoString domPath;
+  domPath.AssignLiteral(FILESYSTEM_DOM_PATH_SEPARATOR_LITERAL);
+  domPath.Append(leafName);
 
-  mErrorResult = ExploreDirectory(path, file);
+  mErrorResult = ExploreDirectory(domPath, file);
 }
 
 void
@@ -383,8 +384,8 @@ GetFilesHelperBase::ExploreDirectory(const nsAString& aDOMPath, nsIFile* aFile)
     domPath.Append(leafName);
 
     if (isFile) {
-      RefPtr<BlobImpl> blobImpl = new BlobImplFile(currFile);
-      blobImpl->SetPath(domPath);
+      RefPtr<BlobImpl> blobImpl = new FileBlobImpl(currFile);
+      blobImpl->SetDOMPath(domPath);
 
       if (!mTargetBlobImplArray.AppendElement(blobImpl, fallible)) {
         return NS_ERROR_OUT_OF_MEMORY;

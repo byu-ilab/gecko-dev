@@ -124,7 +124,7 @@ struct Zone
         return barrierTracer_;
     }
 
-    JSRuntime* runtimeFromMainThread() const {
+    JSRuntime* runtimeFromActiveCooperatingThread() const {
         MOZ_ASSERT(js::CurrentThreadCanAccessRuntime(runtime_));
         return runtime_;
     }
@@ -309,6 +309,11 @@ CellIsMarkedGray(const Cell* cell)
 
 extern JS_PUBLIC_API(bool)
 CellIsMarkedGrayIfKnown(const Cell* cell);
+
+#ifdef DEBUG
+extern JS_PUBLIC_API(bool)
+CellIsNotGray(const Cell* cell);
+#endif
 
 } /* namespace detail */
 

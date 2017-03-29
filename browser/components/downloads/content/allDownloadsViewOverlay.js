@@ -284,19 +284,6 @@ HistoryDownloadElementShell.prototype = {
     this._updateState();
   },
 
-  get statusTextAndTip() {
-    let status = this.rawStatusTextAndTip;
-
-    // The base object would show extended progress information in the tooltip,
-    // but we move this to the main view and never display a tooltip.
-    if (!this.download.stopped) {
-      status.text = status.tip;
-    }
-    status.tip = "";
-
-    return status;
-  },
-
   onStateChanged() {
     this._updateState();
 
@@ -373,8 +360,7 @@ HistoryDownloadElementShell.prototype = {
       DownloadsCommon.removeAndFinalizeDownload(this.download);
     }
     if (this._historyDownload) {
-      let uri = NetUtil.newURI(this.download.source.url);
-      PlacesUtils.bhistory.removePage(uri);
+      PlacesUtils.history.remove(this.download.source.url);
     }
   },
 

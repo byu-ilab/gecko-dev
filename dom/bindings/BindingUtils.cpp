@@ -289,12 +289,12 @@ TErrorResult<CleanupPolicy>::ThrowJSException(JSContext* cx, JS::Handle<JS::Valu
   // root.
   mJSException.setUndefined();
   if (!js::AddRawValueRoot(cx, &mJSException, "TErrorResult::mJSException")) {
-    // Don't use NS_ERROR_DOM_JS_EXCEPTION, because that indicates we have
-    // in fact rooted mJSException.
+    // Don't use NS_ERROR_INTERNAL_ERRORRESULT_JS_EXCEPTION, because that
+    // indicates we have in fact rooted mJSException.
     mResult = NS_ERROR_OUT_OF_MEMORY;
   } else {
     mJSException = exn;
-    mResult = NS_ERROR_DOM_JS_EXCEPTION;
+    mResult = NS_ERROR_INTERNAL_ERRORRESULT_JS_EXCEPTION;
 #ifdef DEBUG
     mUnionState = HasJSException;
 #endif // DEBUG
@@ -379,7 +379,7 @@ TErrorResult<CleanupPolicy>::ThrowDOMException(nsresult rv,
   AssertInOwningThread();
   ClearUnionData();
 
-  mResult = NS_ERROR_DOM_DOMEXCEPTION;
+  mResult = NS_ERROR_INTERNAL_ERRORRESULT_DOMEXCEPTION;
   mDOMExceptionInfo = new DOMExceptionInfo(rv, message);
 #ifdef DEBUG
   mUnionState = HasDOMExceptionInfo;
@@ -600,7 +600,7 @@ TErrorResult<CleanupPolicy>::NoteJSContextException(JSContext* aCx)
 {
   AssertInOwningThread();
   if (JS_IsExceptionPending(aCx)) {
-    mResult = NS_ERROR_DOM_EXCEPTION_ON_JSCONTEXT;
+    mResult = NS_ERROR_INTERNAL_ERRORRESULT_EXCEPTION_ON_JSCONTEXT;
   } else {
     mResult = NS_ERROR_UNCATCHABLE_EXCEPTION;
   }
@@ -1209,14 +1209,6 @@ GetInterfaceImpl(JSContext* aCx, nsIInterfaceRequestor* aRequestor,
   if (!WrapObject(aCx, result, iid, aRetval)) {
     aError.Throw(NS_ERROR_FAILURE);
   }
-}
-
-bool
-UnforgeableValueOf(JSContext* cx, unsigned argc, JS::Value* vp)
-{
-  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
-  args.rval().set(args.thisv());
-  return true;
 }
 
 bool
@@ -2127,7 +2119,9 @@ ReparentWrapper(JSContext* aCx, JS::Handle<JSObject*> aObjArg)
   // transplanting code, since it has no good way to handle errors. This uses
   // the untrusted script limit, which is not strictly necessary since no
   // actual script should run.
-  JS_CHECK_RECURSION_CONSERVATIVE(aCx, return NS_ERROR_FAILURE);
+  if (!js::CheckRecursionLimitConservative(aCx)) {
+    return NS_ERROR_FAILURE;
+  }
 
   JS::Rooted<JSObject*> aObj(aCx, aObjArg);
   const DOMJSClass* domClass = GetDOMClass(aObj);
@@ -2590,7 +2584,7 @@ NonVoidByteStringToJsval(JSContext *cx, const nsACString &str,
 
 
 template<typename T> static void
-NormalizeUSVStringInternal(JSContext* aCx, T& aString)
+NormalizeUSVStringInternal(T& aString)
 {
   char16_t* start = aString.BeginWriting();
   // Must use const here because we can't pass char** to UTF16CharEnumerator as
@@ -2607,15 +2601,15 @@ NormalizeUSVStringInternal(JSContext* aCx, T& aString)
 }
 
 void
-NormalizeUSVString(JSContext* aCx, nsAString& aString)
+NormalizeUSVString(nsAString& aString)
 {
-  NormalizeUSVStringInternal(aCx, aString);
+  NormalizeUSVStringInternal(aString);
 }
 
 void
-NormalizeUSVString(JSContext* aCx, binding_detail::FakeString& aString)
+NormalizeUSVString(binding_detail::FakeString& aString)
 {
-  NormalizeUSVStringInternal(aCx, aString);
+  NormalizeUSVStringInternal(aString);
 }
 
 bool
@@ -2795,7 +2789,7 @@ HandlePrerenderingViolation(nsPIDOMWindowInner* aWindow)
   // Suspend event handling on the document
   nsCOMPtr<nsIDocument> doc = aWindow->GetExtantDoc();
   if (doc) {
-    doc->SuppressEventHandling(nsIDocument::eEvents);
+    doc->SuppressEventHandling();
   }
 }
 
@@ -3618,8 +3612,15 @@ DeprecationWarning(JSContext* aCx, JSObject* aObject,
     return;
   }
 
+  DeprecationWarning(global, aOperation);
+}
+
+void
+DeprecationWarning(const GlobalObject& aGlobal,
+                   nsIDocument::DeprecatedOperations aOperation)
+{
   if (NS_IsMainThread()) {
-    nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(global.GetAsSupports());
+    nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(aGlobal.GetAsSupports());
     if (window && window->GetExtantDoc()) {
       window->GetExtantDoc()->WarnOnceAbout(aOperation);
     }
@@ -3627,7 +3628,7 @@ DeprecationWarning(JSContext* aCx, JSObject* aObject,
     return;
   }
 
-  WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(aCx);
+  WorkerPrivate* workerPrivate = GetWorkerPrivateFromContext(aGlobal.Context());
   if (!workerPrivate) {
     return;
   }

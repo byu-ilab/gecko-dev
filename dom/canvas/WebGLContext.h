@@ -400,17 +400,17 @@ public:
     }
 
     void SynthesizeGLError(GLenum err);
-    void SynthesizeGLError(GLenum err, const char* fmt, ...);
+    void SynthesizeGLError(GLenum err, const char* fmt, ...) MOZ_FORMAT_PRINTF(3, 4);
 
-    void ErrorInvalidEnum(const char* fmt = 0, ...);
-    void ErrorInvalidOperation(const char* fmt = 0, ...);
-    void ErrorInvalidValue(const char* fmt = 0, ...);
-    void ErrorInvalidFramebufferOperation(const char* fmt = 0, ...);
+    void ErrorInvalidEnum(const char* fmt = 0, ...) MOZ_FORMAT_PRINTF(2, 3);
+    void ErrorInvalidOperation(const char* fmt = 0, ...) MOZ_FORMAT_PRINTF(2, 3);
+    void ErrorInvalidValue(const char* fmt = 0, ...) MOZ_FORMAT_PRINTF(2, 3);
+    void ErrorInvalidFramebufferOperation(const char* fmt = 0, ...) MOZ_FORMAT_PRINTF(2, 3);
     void ErrorInvalidEnumInfo(const char* info, GLenum enumValue);
     void ErrorInvalidEnumInfo(const char* info, const char* funcName,
                               GLenum enumValue);
-    void ErrorOutOfMemory(const char* fmt = 0, ...);
-    void ErrorImplementationBug(const char* fmt = 0, ...);
+    void ErrorOutOfMemory(const char* fmt = 0, ...) MOZ_FORMAT_PRINTF(2, 3);
+    void ErrorImplementationBug(const char* fmt = 0, ...) MOZ_FORMAT_PRINTF(2, 3);
 
     void ErrorInvalidEnumArg(const char* funcName, const char* argName, GLenum val);
 
@@ -1352,9 +1352,22 @@ public:
 
     ////
 
+protected:
+    void VertexAttribAnyPointer(const char* funcName, bool isFuncInt, GLuint index,
+                                GLint size, GLenum type, bool normalized, GLsizei stride,
+                                WebGLintptr byteOffset);
+
+public:
     void VertexAttribPointer(GLuint index, GLint size, GLenum type,
                              WebGLboolean normalized, GLsizei stride,
-                             WebGLintptr byteOffset);
+                             WebGLintptr byteOffset)
+    {
+        const char funcName[] = "vertexAttribPointer";
+        const bool isFuncInt = false;
+        VertexAttribAnyPointer(funcName, isFuncInt, index, size, type, normalized, stride,
+                               byteOffset);
+    }
+
     void VertexAttribDivisor(GLuint index, GLuint divisor);
 
 private:
@@ -1790,9 +1803,6 @@ private:
     // Context customization points
     virtual WebGLVertexArray* CreateVertexArrayImpl();
 
-    virtual bool ValidateAttribPointerType(bool integerMode, GLenum type, uint32_t* alignment, const char* info) = 0;
-    virtual bool ValidateUniformMatrixTranspose(bool transpose, const char* info) = 0;
-
 public:
     void ForceLoseContext(bool simulateLoss = false);
 
@@ -1955,6 +1965,8 @@ protected:
     bool mNeedsFakeNoStencil;
     bool mNeedsEmulatedLoneDepthStencil;
 
+    bool mNeedsIndexValidation;
+
     const bool mAllowFBInvalidation;
 
     bool Has64BitTimestamps() const;
@@ -2037,10 +2049,10 @@ protected:
 
 public:
     // console logging helpers
-    void GenerateWarning(const char* fmt, ...);
+    void GenerateWarning(const char* fmt, ...) MOZ_FORMAT_PRINTF(2, 3);
     void GenerateWarning(const char* fmt, va_list ap);
 
-    void GeneratePerfWarning(const char* fmt, ...) const;
+    void GeneratePerfWarning(const char* fmt, ...) const MOZ_FORMAT_PRINTF(2, 3);
 
 public:
     UniquePtr<webgl::FormatUsageAuthority> mFormatUsage;
@@ -2101,50 +2113,6 @@ bool
 ValidateTexImageTarget(WebGLContext* webgl, const char* funcName, uint8_t funcDims,
                        GLenum rawTexImageTarget, TexImageTarget* const out_texImageTarget,
                        WebGLTexture** const out_tex);
-
-class UniqueBuffer
-{
-    // Like UniquePtr<>, but for void* and malloc/calloc/free.
-    void* mBuffer;
-
-public:
-    UniqueBuffer()
-        : mBuffer(nullptr)
-    { }
-
-    MOZ_IMPLICIT UniqueBuffer(void* buffer)
-        : mBuffer(buffer)
-    { }
-
-    ~UniqueBuffer() {
-        free(mBuffer);
-    }
-
-    UniqueBuffer(UniqueBuffer&& other) {
-        this->mBuffer = other.mBuffer;
-        other.mBuffer = nullptr;
-    }
-
-    UniqueBuffer& operator =(UniqueBuffer&& other) {
-        free(this->mBuffer);
-        this->mBuffer = other.mBuffer;
-        other.mBuffer = nullptr;
-        return *this;
-    }
-
-    UniqueBuffer& operator =(void* newBuffer) {
-        free(this->mBuffer);
-        this->mBuffer = newBuffer;
-        return *this;
-    }
-
-    explicit operator bool() const { return bool(mBuffer); }
-
-    void* get() const { return mBuffer; }
-
-    UniqueBuffer(const UniqueBuffer& other) = delete; // construct using Move()!
-    void operator =(const UniqueBuffer& other) = delete; // assign using Move()!
-};
 
 class ScopedUnpackReset final
     : public gl::ScopedGLWrapper<ScopedUnpackReset>

@@ -136,11 +136,12 @@ class JS_FRIEND_API(Wrapper) : public BaseProxyHandler
     static JSObject* New(JSContext* cx, JSObject* obj, const Wrapper* handler,
                          const WrapperOptions& options = WrapperOptions());
 
-    static JSObject* Renew(JSContext* cx, JSObject* existing, JSObject* obj, const Wrapper* handler);
+    static JSObject* Renew(JSObject* existing, JSObject* obj, const Wrapper* handler);
 
     static const Wrapper* wrapperHandler(JSObject* wrapper);
 
     static JSObject* wrappedObject(JSObject* wrapper);
+    static JSObject* wrappedObjectMaybeGray(JSObject* wrapper);
 
     unsigned flags() const {
         return mFlags;
@@ -364,7 +365,7 @@ ReportAccessDenied(JSContext* cx);
 JS_FRIEND_API(bool)
 IsCrossCompartmentWrapper(JSObject* obj);
 
-void
+JS_FRIEND_API(void)
 NukeCrossCompartmentWrapper(JSContext* cx, JSObject* wrapper);
 
 void

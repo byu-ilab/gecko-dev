@@ -141,6 +141,7 @@ public:
       TextureFactoryIdentifier(LayersBackend::LAYERS_OPENGL,
                                XRE_GetProcessType(),
                                GetMaxTextureSize(),
+                               false,
                                mFBOTextureTarget == LOCAL_GL_TEXTURE_2D,
                                SupportsPartialTextureUpdate());
     return result;
@@ -211,6 +212,8 @@ public:
   virtual bool Resume() override;
 
   GLContext* gl() const { return mGLContext; }
+  GLContext* GetGLContext() const override { return mGLContext; }
+
   /**
    * Clear the program state. This must be called
    * before operating on the GLContext directly. */

@@ -2,6 +2,8 @@
 
 module.exports = { // eslint-disable-line no-undef
   "extends": [
-    "../../../../testing/mochitest/mochitest.eslintrc.js",
+    "plugin:mozilla/browser-test",
+    "plugin:mozilla/chrome-test",
+    "plugin:mozilla/mochitest-test",
   ]
 };

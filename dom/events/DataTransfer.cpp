@@ -105,8 +105,11 @@ DataTransfer::DataTransfer(nsISupports* aParent, EventMessage aEventMessage,
       aEventMessage == eDragStart) {
     mReadOnly = false;
   } else if (mIsExternal) {
-    if (aEventMessage == ePaste) {
-      CacheExternalClipboardFormats();
+    if (aEventMessage == ePasteNoFormatting) {
+      mEventMessage = ePaste;
+      CacheExternalClipboardFormats(true);
+    } else if (aEventMessage == ePaste) {
+      CacheExternalClipboardFormats(false);
     } else if (aEventMessage >= eDragDropEventFirst &&
                aEventMessage <= eDragDropEventLast) {
       CacheExternalDragFormats();
@@ -329,8 +332,11 @@ DataTransfer::GetTypes(nsTArray<nsString>& aTypes, CallerType aCallerType) const
       continue;
     }
 
+    // NOTE: The reason why we get the internal type here is because we want
+    // kFileMime to appear in the types list for backwards compatibility
+    // reasons.
     nsAutoString type;
-    item->GetType(type);
+    item->GetInternalType(type);
     if (item->Kind() == DataTransferItem::KIND_STRING || type.EqualsASCII(kFileMime)) {
       // If the entry has kind KIND_STRING, we want to add it to the list.
       aTypes.AppendElement(type);
@@ -518,8 +524,11 @@ DataTransfer::MozTypesAt(uint32_t aIndex, CallerType aCallerType,
         continue;
       }
 
+      // NOTE: The reason why we get the internal type here is because we want
+      // kFileMime to appear in the types list for backwards compatibility
+      // reasons.
       nsAutoString type;
-      items[i]->GetType(type);
+      items[i]->GetInternalType(type);
       if (NS_WARN_IF(!types->Add(type))) {
         aRv.Throw(NS_ERROR_FAILURE);
         return nullptr;
@@ -678,7 +687,7 @@ DataTransfer::SetDataAtInternal(const nsAString& aFormat, nsIVariant* aData,
 
   // Don't allow the custom type to be assigned.
   if (aFormat.EqualsLiteral(kCustomTypesMime)) {
-    return NS_ERROR_TYPE_ERR;
+    return NS_ERROR_DOM_NOT_SUPPORTED_ERR;
   }
 
   if (!PrincipalMaySetData(aFormat, aData, aSubjectPrincipal)) {
@@ -978,7 +987,7 @@ DataTransfer::GetTransferable(uint32_t aIndex, nsILoadContext* aLoadContext)
       }
 
       nsAutoString type;
-      formatitem->GetType(type);
+      formatitem->GetInternalType(type);
 
       // If the data is of one of the well-known formats, use it directly.
       bool isCustomFormat = true;
@@ -1356,7 +1365,7 @@ DataTransfer::CacheExternalDragFormats()
 }
 
 void
-DataTransfer::CacheExternalClipboardFormats()
+DataTransfer::CacheExternalClipboardFormats(bool aPlainTextOnly)
 {
   NS_ASSERTION(mEventMessage == ePaste,
                "caching clipboard data for invalid event");
@@ -1374,6 +1383,17 @@ DataTransfer::CacheExternalClipboardFormats()
   nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
   nsCOMPtr<nsIPrincipal> sysPrincipal;
   ssm->GetSystemPrincipal(getter_AddRefs(sysPrincipal));
+
+  if (aPlainTextOnly) {
+    bool supported;
+    const char* unicodeMime[] = { kUnicodeMime };
+    clipboard->HasDataMatchingFlavors(unicodeMime, 1, mClipboardType,
+                                      &supported);
+    if (supported) {
+      CacheExternalData(kUnicodeMime, 0, sysPrincipal, false);
+    }
+    return;
+  }
 
   // Check if the clipboard has any files
   bool hasFileData = false;

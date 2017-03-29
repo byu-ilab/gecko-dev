@@ -65,6 +65,8 @@ public:
 
   void UpdateContentProcessGMPCapabilities();
 
+  AbstractThread* MainThread() const { return mMainThread; }
+
 private:
   friend class GMPServiceParent;
 
@@ -115,11 +117,17 @@ protected:
   RefPtr<GenericPromise::AllPromiseType> LoadFromEnvironment();
   RefPtr<GenericPromise> AddOnGMPThread(nsString aDirectory);
 
-  virtual RefPtr<GetGMPContentParentPromise>
-  GetContentParent(GMPCrashHelper* aHelper,
-                   const nsACString& aNodeId,
-                   const nsCString& aAPI,
-                   const nsTArray<nsCString>& aTags) override;
+  virtual RefPtr<GetGMPContentParentPromise> GetContentParent(
+    GMPCrashHelper* aHelper,
+    const nsACString& aNodeIdString,
+    const nsCString& aAPI,
+    const nsTArray<nsCString>& aTags) override;
+
+  RefPtr<GetGMPContentParentPromise> GetContentParent(
+    GMPCrashHelper* aHelper,
+    const NodeId& aNodeId,
+    const nsCString& aAPI,
+    const nsTArray<nsCString>& aTags) override;
 
 private:
   // Creates a copy of aOriginal. Note that the caller is responsible for
@@ -202,6 +210,8 @@ private:
   // Tracks how many users are running (on the GMP thread). Only when this count
   // drops to 0 can we safely shut down the thread.
   MainThreadOnly<int32_t> mServiceUserCount;
+
+  const RefPtr<AbstractThread> mMainThread;
 };
 
 nsresult ReadSalt(nsIFile* aPath, nsACString& aOutData);
@@ -219,23 +229,34 @@ public:
   }
   virtual ~GMPServiceParent();
 
-  mozilla::ipc::IPCResult RecvGetGMPNodeId(const nsString& aOrigin,
-                                           const nsString& aTopLevelOrigin,
-                                           const nsString& aGMPName,
-                                           nsCString* aID) override;
+  ipc::IPCResult RecvGetGMPNodeId(const nsString& aOrigin,
+                                  const nsString& aTopLevelOrigin,
+                                  const nsString& aGMPName,
+                                  nsCString* aID) override;
   void ActorDestroy(ActorDestroyReason aWhy) override;
 
   static bool Create(Endpoint<PGMPServiceParent>&& aGMPService);
 
-  mozilla::ipc::IPCResult RecvLaunchGMP(const nsCString& aNodeId,
-                                        const nsCString& aAPI,
-                                        nsTArray<nsCString>&& aTags,
-                                        nsTArray<ProcessId>&& aAlreadyBridgedTo,
-                                        uint32_t* aOutPluginId,
-                                        ProcessId* aOutID,
-                                        nsCString* aOutDisplayName,
-                                        Endpoint<PGMPContentParent>* aOutEndpoint,
-                                        nsresult* aOutRv) override;
+  ipc::IPCResult RecvLaunchGMP(const nsCString& aNodeId,
+                               const nsCString& aAPI,
+                               nsTArray<nsCString>&& aTags,
+                               nsTArray<ProcessId>&& aAlreadyBridgedTo,
+                               uint32_t* aOutPluginId,
+                               ProcessId* aOutID,
+                               nsCString* aOutDisplayName,
+                               Endpoint<PGMPContentParent>* aOutEndpoint,
+                               nsresult* aOutRv) override;
+
+  ipc::IPCResult RecvLaunchGMPForNodeId(
+    const NodeIdData& nodeId,
+    const nsCString& aAPI,
+    nsTArray<nsCString>&& aTags,
+    nsTArray<ProcessId>&& aAlreadyBridgedTo,
+    uint32_t* aOutPluginId,
+    ProcessId* aOutID,
+    nsCString* aOutDisplayName,
+    Endpoint<PGMPContentParent>* aOutEndpoint,
+    nsresult* aOutRv) override;
 
 private:
   void CloseTransport(Monitor* aSyncMonitor, bool* aCompleted);

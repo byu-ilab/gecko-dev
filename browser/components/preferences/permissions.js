@@ -6,6 +6,7 @@
 /* import-globals-from ../../../toolkit/content/treeUtils.js */
 
 Components.utils.import("resource://gre/modules/Services.jsm");
+Components.utils.import("resource://gre/modules/AppConstants.jsm");
 
 const nsIPermissionManager = Components.interfaces.nsIPermissionManager;
 const nsICookiePermission = Components.interfaces.nsICookiePermission;
@@ -20,13 +21,13 @@ function Permission(principal, type, capability) {
 }
 
 var gPermissionManager = {
-  _type                 : "",
-  _permissions          : [],
-  _permissionsToAdd     : new Map(),
-  _permissionsToDelete  : new Map(),
-  _bundle               : null,
-  _tree                 : null,
-  _observerRemoved      : false,
+  _type: "",
+  _permissions: [],
+  _permissionsToAdd: new Map(),
+  _permissionsToDelete: new Map(),
+  _bundle: null,
+  _tree: null,
+  _observerRemoved: false,
 
   _view: {
     _rowCount: 0,
@@ -217,7 +218,7 @@ var gPermissionManager = {
 
     var permissionsText = document.getElementById("permissionsText");
     while (permissionsText.hasChildNodes())
-      permissionsText.removeChild(permissionsText.firstChild);
+      permissionsText.firstChild.remove();
     permissionsText.appendChild(document.createTextNode(aParams.introText));
 
     document.title = aParams.windowTitle;
@@ -334,6 +335,7 @@ var gPermissionManager = {
     } else if (AppConstants.platform == "macosx" &&
                aEvent.keyCode == KeyEvent.DOM_VK_BACK_SPACE) {
       this.onPermissionDeleted();
+      aEvent.preventDefault();
     }
   },
 

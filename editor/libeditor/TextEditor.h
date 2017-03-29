@@ -19,7 +19,6 @@ class nsIContent;
 class nsIDOMDocument;
 class nsIDOMElement;
 class nsIDOMEvent;
-class nsIDOMKeyEvent;
 class nsIDOMNode;
 class nsIDocumentEncoder;
 class nsIEditRules;
@@ -57,6 +56,11 @@ public:
 
   TextEditor();
 
+  virtual TextEditor* AsTextEditor() override { return this; }
+  virtual const TextEditor* AsTextEditor() const override { return this; }
+  virtual HTMLEditor* AsHTMLEditor() override;
+  virtual const HTMLEditor* AsHTMLEditor() const override;
+
   // nsIPlaintextEditor methods
   NS_DECL_NSIPLAINTEXTEDITOR
 
@@ -80,7 +84,6 @@ public:
                   const nsAString& aValue) override;
 
   NS_IMETHOD GetDocumentIsEmpty(bool* aDocumentIsEmpty) override;
-  NS_IMETHOD GetIsDocumentEditable(bool* aIsDocumentEditable) override;
 
   NS_IMETHOD DeleteSelection(EDirection aAction,
                              EStripWrappers aStripWrappers) override;
@@ -128,7 +131,8 @@ public:
    */
   virtual nsresult SelectEntireDocument(Selection* aSelection) override;
 
-  virtual nsresult HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent) override;
+  virtual nsresult HandleKeyPressEvent(
+                     WidgetKeyboardEvent* aKeyboardEvent) override;
 
   virtual already_AddRefed<dom::EventTarget> GetDOMEventTarget() override;
 
@@ -213,11 +217,6 @@ protected:
   nsresult SharedOutputString(uint32_t aFlags, bool* aIsCollapsed,
                               nsAString& aResult);
 
-  /**
-   * Small utility routine to test the eEditorReadonly bit.
-   */
-  bool IsModifiable();
-
   enum PasswordFieldAllowed
   {
     ePasswordFieldAllowed,
@@ -228,7 +227,7 @@ protected:
                           int32_t aSelectionType,
                           bool* aActionTaken = nullptr);
 
-  bool UpdateMetaCharset(nsIDOMDocument* aDocument,
+  bool UpdateMetaCharset(nsIDocument& aDocument,
                          const nsACString& aCharacterSet);
 
 protected:

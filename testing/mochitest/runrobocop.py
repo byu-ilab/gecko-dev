@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import traceback
+from collections import defaultdict
 
 sys.path.insert(
     0, os.path.abspath(
@@ -41,7 +42,7 @@ class RobocopTestRunner(MochitestDesktop):
         """
            Simple one-time initialization.
         """
-        MochitestDesktop.__init__(self, options)
+        MochitestDesktop.__init__(self, options.flavor, options)
 
         self.auto = automation
         self.dm = devmgr
@@ -101,7 +102,7 @@ class RobocopTestRunner(MochitestDesktop):
             "Android sdk version '%s'; will use this to filter manifests" %
             str(androidVersion))
         mozinfo.info['android_version'] = androidVersion
-        if (self.options.dm_trans == 'adb' and self.options.robocopApk):
+        if self.options.robocopApk:
             self.dm._checkCmd(["install", "-r", self.options.robocopApk])
             self.log.debug("Robocop APK %s installed" %
                            self.options.robocopApk)
@@ -511,7 +512,12 @@ class RobocopTestRunner(MochitestDesktop):
                               (test['name'], test['disabled']))
                 continue
             active_tests.append(test)
-        self.log.suite_start([t['name'] for t in active_tests])
+
+        tests_by_manifest = defaultdict(list)
+        for test in active_tests:
+            tests_by_manifest[test['manifest']].append(test['name'])
+        self.log.suite_start(tests_by_manifest)
+
         worstTestResult = None
         for test in active_tests:
             result = self.runSingleTest(test)

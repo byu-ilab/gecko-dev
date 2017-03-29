@@ -11,4 +11,7 @@ if CONFIG['MOZ_STYLO']:
     if CONFIG['MOZ_STYLO_BINDGEN']:
         features += ['bindgen']
 
-RustLibrary('gkrust-gtest', features)
+if CONFIG['MOZ_BUILD_WEBRENDER']:
+    features += ['quantum_render']
+
+RustLibrary('gkrust-gtest', features, '../..')

@@ -142,7 +142,9 @@ ClientLayerManager::Destroy()
     RefPtr<TransactionIdAllocator> allocator = mTransactionIdAllocator;
     uint64_t id = mLatestTransactionId;
 
-    RefPtr<Runnable> task = NS_NewRunnableFunction([allocator, id] () -> void {
+    RefPtr<Runnable> task = NS_NewRunnableFunction(
+      "TransactionIdAllocator::NotifyTransactionCompleted",
+      [allocator, id] () -> void {
       allocator->NotifyTransactionCompleted(id);
     });
     NS_DispatchToMainThread(task.forget());
@@ -312,6 +314,7 @@ ClientLayerManager::EndTransactionInternal(DrawPaintedLayerCallback aCallback,
                                            EndTransactionFlags)
 {
   PaintTelemetry::AutoRecord record(PaintTelemetry::Metric::Rasterization);
+  GeckoProfilerTracingRAII tracer("Paint", "Rasterize");
 
 #ifdef WIN32
   if (aCallbackData) {
@@ -328,7 +331,6 @@ ClientLayerManager::EndTransactionInternal(DrawPaintedLayerCallback aCallback,
   MOZ_LAYERS_LOG(("  ----- (beginning paint)"));
   Log();
 #endif
-  profiler_tracing("Paint", "Rasterize", TRACING_INTERVAL_START);
 
   NS_ASSERTION(InConstruction(), "Should be in construction phase");
   mPhase = PHASE_DRAWING;
@@ -509,6 +511,26 @@ ClientLayerManager::GetCompositorSideAPZTestData(APZTestData* aData) const
   }
 }
 
+void
+ClientLayerManager::SetTransactionIdAllocator(TransactionIdAllocator* aAllocator)
+{
+  // When changing the refresh driver, the previous refresh driver may never
+  // receive updates of pending transactions it's waiting for. So clear the
+  // waiting state before assigning another refresh driver.
+  if (mTransactionIdAllocator && (aAllocator != mTransactionIdAllocator)) {
+    mTransactionIdAllocator->ClearPendingTransactions();
+
+    // We should also reset the transaction id of the new allocator to previous
+    // allocator's last transaction id, so that completed transactions for
+    // previous allocator will be ignored and won't confuse the new allocator.
+    if (aAllocator) {
+      aAllocator->ResetInitialTransactionId(mTransactionIdAllocator->LastTransactionId());
+    }
+  }
+
+  mTransactionIdAllocator = aAllocator;
+}
+
 float
 ClientLayerManager::RequestProperty(const nsAString& aProperty)
 {
@@ -654,6 +676,7 @@ ClientLayerManager::StopFrameTimeRecording(uint32_t         aStartIndex,
 void
 ClientLayerManager::ForwardTransaction(bool aScheduleComposite)
 {
+  GeckoProfilerTracingRAII tracer("Paint", "ForwardTransaction");
   TimeStamp start = TimeStamp::Now();
 
   // Skip the synchronization for buffer since we also skip the painting during
@@ -779,7 +802,7 @@ ClientLayerManager::HandleMemoryPressure()
 void
 ClientLayerManager::ClearLayer(Layer* aLayer)
 {
-  ClientLayer::ToClientLayer(aLayer)->ClearCachedResources();
+  aLayer->ClearCachedResources();
   for (Layer* child = aLayer->GetFirstChild(); child;
        child = child->GetNextSibling()) {
     ClearLayer(child);
@@ -803,7 +826,6 @@ ClientLayerManager::GetBackendName(nsAString& aName)
     case LayersBackend::LAYERS_NONE: aName.AssignLiteral("None"); return;
     case LayersBackend::LAYERS_BASIC: aName.AssignLiteral("Basic"); return;
     case LayersBackend::LAYERS_OPENGL: aName.AssignLiteral("OpenGL"); return;
-    case LayersBackend::LAYERS_D3D9: aName.AssignLiteral("Direct3D 9"); return;
     case LayersBackend::LAYERS_D3D11: {
 #ifdef XP_WIN
       if (DeviceManagerDx::Get()->IsWARP()) {

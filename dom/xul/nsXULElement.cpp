@@ -231,7 +231,7 @@ nsXULElement::Create(nsXULPrototypeElement* aPrototype, mozilla::dom::NodeInfo *
             element->SetHasID();
         }
         if (aPrototype->mHasClassAttribute) {
-            element->SetFlags(NODE_MAY_HAVE_CLASS);
+            element->SetMayHaveClass();
         }
         if (aPrototype->mHasStyleAttribute) {
             element->SetMayHaveStyle();
@@ -405,7 +405,7 @@ nsXULElement::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
             element->SetHasID();
         }
         if (originalName->Equals(nsGkAtoms::_class)) {
-            element->SetFlags(NODE_MAY_HAVE_CLASS);
+            element->SetMayHaveClass();
         }
         if (originalName->Equals(nsGkAtoms::style)) {
             element->SetMayHaveStyle();
@@ -1018,7 +1018,7 @@ nsXULElement::UnregisterAccessKey(const nsAString& aOldValue)
 
 nsresult
 nsXULElement::BeforeSetAttr(int32_t aNamespaceID, nsIAtom* aName,
-                            nsAttrValueOrString* aValue, bool aNotify)
+                            const nsAttrValueOrString* aValue, bool aNotify)
 {
     if (aNamespaceID == kNameSpaceID_None && aName == nsGkAtoms::accesskey &&
         IsInUncomposedDoc()) {

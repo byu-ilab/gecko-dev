@@ -35,6 +35,7 @@
 #include "jsscriptinlines.h"
 
 #include "vm/NativeObject-inl.h"
+#include "vm/UnboxedObject-inl.h"
 
 using namespace js;
 using namespace js::gc;
@@ -53,6 +54,7 @@ JSCompartment::JSCompartment(Zone* zone, const JS::CompartmentOptions& options =
     isAtomsCompartment_(false),
     isSelfHosting(false),
     marked(true),
+    warnedAboutDateToLocaleFormat(false),
     warnedAboutExprClosure(false),
     warnedAboutForEach(false),
     warnedAboutStringGenericsMethods(0),
@@ -77,6 +79,7 @@ JSCompartment::JSCompartment(Zone* zone, const JS::CompartmentOptions& options =
     nonSyntacticLexicalEnvironments_(nullptr),
     gcIncomingGrayPointers(nullptr),
     debugModeBits(0),
+    validAccessPtr(nullptr),
     randomKeyGenerator_(runtime_->forkRandomKeyGenerator()),
     watchpointMap(nullptr),
     scriptCountsMap(nullptr),
@@ -103,7 +106,7 @@ JSCompartment::~JSCompartment()
     reportTelemetry();
 
     // Write the code coverage information in a file.
-    JSRuntime* rt = runtimeFromMainThread();
+    JSRuntime* rt = runtimeFromActiveCooperatingThread();
     if (rt->lcovOutput().isEnabled())
         rt->lcovOutput().writeLCovResult(lcovOutput);
 
@@ -154,7 +157,7 @@ JSCompartment::init(JSContext* maybecx)
     if (!enumerators)
         return false;
 
-    if (!savedStacks_.init() || !varNames_.init()) {
+    if (!savedStacks_.init() || !varNames_.init() || !templateLiteralMap_.init()) {
         if (maybecx)
             ReportOutOfMemory(maybecx);
         return false;
@@ -400,7 +403,8 @@ JSCompartment::getNonWrapperObjectForCurrentCompartment(JSContext* cx, MutableHa
     // We're a bit worried about infinite recursion here, so we do a check -
     // see bug 809295.
     auto preWrap = cx->runtime()->wrapObjectCallbacks->preWrap;
-    JS_CHECK_SYSTEM_RECURSION(cx, return false);
+    if (!CheckSystemRecursionLimit(cx))
+        return false;
     if (preWrap) {
         preWrap(cx, cx->global(), obj, objectPassedToWrap, obj);
         if (!obj)
@@ -414,6 +418,8 @@ JSCompartment::getNonWrapperObjectForCurrentCompartment(JSContext* cx, MutableHa
 bool
 JSCompartment::getOrCreateWrapper(JSContext* cx, HandleObject existing, MutableHandleObject obj)
 {
+    MOZ_ASSERT(JS::ObjectIsNotGray(obj));
+
     // If we already have a wrapper for this value, use it.
     RootedValue key(cx, ObjectValue(*obj));
     if (WrapperMap::Ptr p = crossCompartmentWrappers.lookup(CrossCompartmentKey(key))) {
@@ -460,7 +466,7 @@ JSCompartment::wrap(JSContext* cx, MutableHandleObject obj)
 
     // Anything we're wrapping has already escaped into script, so must have
     // been unmarked-gray at some point in the past.
-    MOZ_ASSERT(!ObjectIsMarkedGray(obj));
+    MOZ_ASSERT(JS::ObjectIsNotGray(obj));
 
     // The passed object may already be wrapped, or may fit a number of special
     // cases that we need to check for and manually correct.
@@ -597,6 +603,72 @@ JSCompartment::addToVarNames(JSContext* cx, JS::Handle<JSAtom*> name)
     return false;
 }
 
+/* static */ HashNumber
+TemplateRegistryHashPolicy::hash(const Lookup& lookup)
+{
+    size_t length = GetAnyBoxedOrUnboxedInitializedLength(lookup);
+    HashNumber hash = 0;
+    for (uint32_t i = 0; i < length; i++) {
+        JSAtom& lookupAtom = GetAnyBoxedOrUnboxedDenseElement(lookup, i).toString()->asAtom();
+        hash = mozilla::AddToHash(hash, lookupAtom.hash());
+    }
+    return hash;
+}
+
+/* static */ bool
+TemplateRegistryHashPolicy::match(const Key& key, const Lookup& lookup)
+{
+    size_t length = GetAnyBoxedOrUnboxedInitializedLength(lookup);
+    if (GetAnyBoxedOrUnboxedInitializedLength(key) != length)
+        return false;
+
+    for (uint32_t i = 0; i < length; i++) {
+        JSAtom* a = &GetAnyBoxedOrUnboxedDenseElement(key, i).toString()->asAtom();
+        JSAtom* b = &GetAnyBoxedOrUnboxedDenseElement(lookup, i).toString()->asAtom();
+        if (a != b)
+            return false;
+    }
+
+    return true;
+}
+
+bool
+JSCompartment::getTemplateLiteralObject(JSContext* cx, HandleObject rawStrings,
+                                        MutableHandleObject templateObj)
+{
+    if (TemplateRegistry::AddPtr p = templateLiteralMap_.lookupForAdd(rawStrings)) {
+        templateObj.set(p->value());
+
+        // The template object must have been frozen when it was added to the
+        // registry.
+        MOZ_ASSERT(!templateObj->nonProxyIsExtensible());
+    } else {
+        // Add the template object to the registry before freezing to avoid
+        // needing to call relookupOrAdd.
+        if (!templateLiteralMap_.add(p, rawStrings, templateObj))
+            return false;
+
+        MOZ_ASSERT(templateObj->nonProxyIsExtensible());
+        RootedValue rawValue(cx, ObjectValue(*rawStrings));
+        if (!DefineProperty(cx, templateObj, cx->names().raw, rawValue, nullptr, nullptr, 0))
+            return false;
+        if (!FreezeObject(cx, rawStrings))
+            return false;
+        if (!FreezeObject(cx, templateObj))
+            return false;
+    }
+
+    return true;
+}
+
+JSObject*
+JSCompartment::getExistingTemplateLiteralObject(JSObject* rawStrings)
+{
+    TemplateRegistry::Ptr p = templateLiteralMap_.lookup(rawStrings);
+    MOZ_ASSERT(p);
+    return p->value();
+}
+
 void
 JSCompartment::traceOutgoingCrossCompartmentWrappers(JSTracer* trc)
 {
@@ -634,6 +706,10 @@ JSCompartment::trace(JSTracer* trc)
 {
     savedStacks_.trace(trc);
 
+    // The template registry strongly holds everything in it by design and
+    // spec.
+    templateLiteralMap_.trace(trc);
+
     // Atoms are always tenured.
     if (!JS::CurrentThreadIsHeapMinorCollecting())
         varNames_.trace(trc);
@@ -649,12 +725,9 @@ JSCompartment::traceRoots(JSTracer* trc, js::gc::GCRuntime::TraceOrMarkRuntime t
     }
 
     if (!JS::CurrentThreadIsHeapMinorCollecting()) {
-        // JIT code and the global are never nursery allocated, so we only need
-        // to trace them when not doing a minor collection.
-
-        if (jitCompartment_)
-            jitCompartment_->trace(trc, this);
-
+        // The global is never nursery allocated, so we don't need to
+        // trace it when doing a minor collection.
+        //
         // If a compartment is on-stack, we mark its global so that
         // JSContext::global() remains valid.
         if (enterCompartmentDepth && global_.unbarrieredGet())
@@ -695,7 +768,7 @@ JSCompartment::traceRoots(JSTracer* trc, js::gc::GCRuntime::TraceOrMarkRuntime t
     // line option, or with the PCCount JSFriend API functions, then we mark the
     // keys of the map to hold the JSScript alive.
     if (scriptCountsMap &&
-        zone()->group()->profilingScripts &&
+        trc->runtime()->profilingScripts &&
         !JS::CurrentThreadIsHeapMinorCollecting())
     {
         MOZ_ASSERT_IF(!trc->runtime()->isBeingDestroyed(), collectCoverage());
@@ -960,6 +1033,7 @@ void
 JSCompartment::purge()
 {
     dtoaCache.purge();
+    newProxyCache.purge();
     lastCachedNativeIterator = nullptr;
 }
 
@@ -976,6 +1050,7 @@ JSCompartment::clearTables()
     MOZ_ASSERT(!debugEnvs);
     MOZ_ASSERT(enumerators->next() == enumerators);
     MOZ_ASSERT(regExps.empty());
+    MOZ_ASSERT(templateLiteralMap_.empty());
 
     objectGroups.clearTables();
     if (savedStacks_.initialized())
@@ -1060,15 +1135,6 @@ AddLazyFunctionsForCompartment(JSContext* cx, AutoObjectVector& lazyFunctions, A
             continue;
         }
 
-        // This creates a new reference to an object that an ongoing incremental
-        // GC may find to be unreachable. Treat as if we're reading a weak
-        // reference and trigger the read barrier.
-        if (cx->zone()->needsIncrementalBarrier())
-            fun->readBarrier(fun);
-
-        // TODO: The above checks should be rolled into the cell iterator (see
-        // bug 1322971).
-
         if (fun->isInterpretedLazy()) {
             LazyScript* lazy = fun->lazyScriptOrNull();
             if (lazy && lazy->sourceObject() && !lazy->hasUncompiledEnclosingScript()) {
@@ -1121,7 +1187,7 @@ CreateLazyScriptsForCompartment(JSContext* cx)
 bool
 JSCompartment::ensureDelazifyScriptsForDebugger(JSContext* cx)
 {
-    MOZ_ASSERT(cx->compartment() == this);
+    AutoCompartmentUnchecked ac(cx, this);
     if (needsDelazificationForDebugger() && !CreateLazyScriptsForCompartment(cx))
         return false;
     debugModeBits &= ~DebuggerNeedsDelazification;
@@ -1136,7 +1202,7 @@ JSCompartment::updateDebuggerObservesFlag(unsigned flag)
                flag == DebuggerObservesCoverage ||
                flag == DebuggerObservesAsmJS);
 
-    GlobalObject* global = zone()->runtimeFromMainThread()->gc.isForegroundSweeping()
+    GlobalObject* global = zone()->runtimeFromActiveCooperatingThread()->gc.isForegroundSweeping()
                            ? unsafeUnbarrieredMaybeGlobal()
                            : maybeGlobal();
     const GlobalObject::DebuggerVector* v = global->getDebuggers();
@@ -1173,8 +1239,9 @@ JSCompartment::updateDebuggerObservesCoverage()
 
     if (debuggerObservesCoverage()) {
         // Interrupt any running interpreter frame. The scriptCounts are
-        // allocated on demand when a script resume its execution.
-        for (ActivationIterator iter(runtimeFromMainThread()); !iter.done(); ++iter) {
+        // allocated on demand when a script resumes its execution.
+        JSContext* cx = TlsContext.get();
+        for (ActivationIterator iter(cx); !iter.done(); ++iter) {
             if (iter->isInterpreter())
                 iter->asInterpreter()->enableInterruptsUnconditionally();
         }
@@ -1205,7 +1272,7 @@ bool
 JSCompartment::collectCoverageForDebug() const
 {
     return debuggerObservesCoverage() ||
-           zone()->group()->profilingScripts ||
+           runtimeFromAnyThread()->profilingScripts ||
            runtimeFromAnyThread()->lcovOutput().isEnabled();
 }
 
@@ -1251,6 +1318,7 @@ JSCompartment::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                       size_t* savedStacksSet,
                                       size_t* varNamesSet,
                                       size_t* nonSyntacticLexicalEnvironmentsArg,
+                                      size_t* templateLiteralMap,
                                       size_t* jitCompartment,
                                       size_t* privateData)
 {
@@ -1271,6 +1339,7 @@ JSCompartment::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
     if (nonSyntacticLexicalEnvironments_)
         *nonSyntacticLexicalEnvironmentsArg +=
             nonSyntacticLexicalEnvironments_->sizeOfIncludingThis(mallocSizeOf);
+    *templateLiteralMap += templateLiteralMap_.sizeOfExcludingThis(mallocSizeOf);
     if (jitCompartment_)
         *jitCompartment += jitCompartment_->sizeOfIncludingThis(mallocSizeOf);
 

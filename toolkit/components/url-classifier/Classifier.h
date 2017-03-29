@@ -32,7 +32,7 @@ public:
 
   nsresult Open(nsIFile& aCacheDirectory);
   void Close();
-  void Reset();
+  void Reset(); // Not including any intermediary for update.
 
   /**
    * Clear data for specific tables.
@@ -69,6 +69,28 @@ public:
    * the updates in the array and clears it.  Wacky!
    */
   nsresult ApplyUpdates(nsTArray<TableUpdate*>* aUpdates);
+
+  /**
+   * The "background" part of ApplyUpdates. Once the background update
+   * is called, the foreground update has to be called along with the
+   * background result no matter whether the background update is
+   * successful or not.
+   */
+  nsresult ApplyUpdatesBackground(nsTArray<TableUpdate*>* aUpdates,
+                                  nsACString& aFailedTableName);
+
+  /**
+   * The "foreground" part of ApplyUpdates. The in-use data (in-memory and
+   * on-disk) will be touched so this MUST be mutually exclusive to other
+   * member functions.
+   *
+   * If |aBackgroundRv| is successful, the return value is the result of
+   * bringing stuff to the foreground. Otherwise, the foreground table may
+   * be reset according to the background update failed reason and
+   * |aBackgroundRv| will be returned to forward the background update result.
+   */
+  nsresult ApplyUpdatesForeground(nsresult aBackgroundRv,
+                                  const nsACString& aFailedTableName);
 
   /**
    * Apply full hashes retrived from gethash to cache.
@@ -109,18 +131,30 @@ public:
                                            const nsACString& aProvider,
                                            nsIFile** aPrivateStoreDirectory);
 
+  // Swap in in-memory and on-disk database and remove all
+  // update intermediaries.
+  nsresult SwapInNewTablesAndCleanup();
+
+  LookupCache *GetLookupCache(const nsACString& aTable,
+                              bool aForUpdate = false);
+
 private:
   void DropStores();
   void DeleteTables(nsIFile* aDirectory, const nsTArray<nsCString>& aTables);
-  void AbortUpdateAndReset(const nsCString& aTable);
 
   nsresult CreateStoreDirectory();
   nsresult SetupPathNames();
   nsresult RecoverBackups();
   nsresult CleanToDelete();
-  nsresult BackupTables();
-  nsresult RemoveBackupTables();
+  nsresult CopyInUseDirForUpdate();
+  nsresult CopyInUseLookupCacheForUpdate();
   nsresult RegenActiveTables();
+
+
+
+  // Remove any intermediary for update, including in-memory
+  // and on-disk data.
+  void RemoveUpdateIntermediaries();
 
 #ifdef MOZ_SAFEBROWSING_DUMP_FAILED_UPDATES
   already_AddRefed<nsIFile> GetFailedUpdateDirectroy();
@@ -137,7 +171,14 @@ private:
 
   nsresult UpdateCache(TableUpdate* aUpdates);
 
-  LookupCache *GetLookupCache(const nsACString& aTable);
+  LookupCache *GetLookupCacheForUpdate(const nsACString& aTable) {
+    return GetLookupCache(aTable, true);
+  }
+
+  LookupCache *GetLookupCacheFrom(const nsACString& aTable,
+                                  nsTArray<LookupCache*>& aLookupCaches,
+                                  nsIFile* aRootStoreDirectory);
+
 
   bool CheckValidUpdate(nsTArray<TableUpdate*>* aUpdates,
                         const nsACString& aTable);
@@ -152,9 +193,10 @@ private:
   nsCOMPtr<nsIFile> mRootStoreDirectory;
   // Used for atomically updating the other dirs.
   nsCOMPtr<nsIFile> mBackupDirectory;
+  nsCOMPtr<nsIFile> mUpdatingDirectory; // For update only.
   nsCOMPtr<nsIFile> mToDeleteDirectory;
   nsCOMPtr<nsICryptoHash> mCryptoHash;
-  nsTArray<LookupCache*> mLookupCaches;
+  nsTArray<LookupCache*> mLookupCaches; // For query only.
   nsTArray<nsCString> mActiveTablesCache;
   uint32_t mHashKey;
   // Stores the last time a given table was updated (seconds).
@@ -167,6 +209,9 @@ private:
   // Whether mTableRequestResult is outdated and needs to
   // be reloaded from disk.
   bool mIsTableRequestResultOutdated;
+
+  // The copy of mLookupCaches for update only.
+  nsTArray<LookupCache*> mNewLookupCaches;
 };
 
 } // namespace safebrowsing

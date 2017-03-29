@@ -596,6 +596,10 @@ nsIOService::GetProtocolFlags(const char* scheme, uint32_t *flags)
     // API is used by (and only used by) extensions, which is why it's still
     // around. Calling this on a scheme with dynamic flags will throw.
     rv = handler->GetProtocolFlags(flags);
+#if !IS_ORIGIN_IS_FULL_SPEC_DEFINED
+    MOZ_RELEASE_ASSERT(!(*flags & nsIProtocolHandler::ORIGIN_IS_FULL_SPEC),
+                       "ORIGIN_IS_FULL_SPEC is unsupported but used");
+#endif
     return rv;
 }
 
@@ -791,7 +795,9 @@ nsIOService::NewChannelFromURIWithProxyFlagsInternal(nsIURI* aURI,
         // creating a new channel by calling NewChannel().
         if (NS_FAILED(rv)) {
             rv = handler->NewChannel(aURI, getter_AddRefs(channel));
-            NS_ENSURE_SUCCESS(rv, rv);
+            if (NS_FAILED(rv)) {
+                return rv;
+            }
             // The protocol handler does not implement NewChannel2, so
             // maybe we need to wrap the channel (see comment in MaybeWrap
             // function).
@@ -828,9 +834,10 @@ nsIOService::NewChannelFromURIWithProxyFlagsInternal(nsIURI* aURI,
             nsCOMPtr<nsIConsoleService> consoleService =
                 do_GetService(NS_CONSOLESERVICE_CONTRACTID);
             if (consoleService) {
-                consoleService->LogStringMessage(NS_LITERAL_STRING(
-                    "Http channel implementation doesn't support nsIUploadChannel2. An extension has supplied a non-functional http protocol handler. This will break behavior and in future releases not work at all."
-                                                                   ).get());
+                consoleService->LogStringMessage(u"Http channel implementation "
+                    "doesn't support nsIUploadChannel2. An extension has "
+                    "supplied a non-functional http protocol handler. This will "
+                    "break behavior and in future releases not work at all.");
             }
             gHasWarnedUploadChannel2 = true;
         }
@@ -1056,14 +1063,13 @@ nsIOService::SetOffline(bool offline)
         offline = mSetOfflineValue;
 
         if (offline && !mOffline) {
-            NS_NAMED_LITERAL_STRING(offlineString, NS_IOSERVICE_OFFLINE);
             mOffline = true; // indicate we're trying to shutdown
 
             // don't care if notifications fail
             if (observerService)
                 observerService->NotifyObservers(subject,
                                                  NS_IOSERVICE_GOING_OFFLINE_TOPIC,
-                                                 offlineString.get());
+                                                 u"" NS_IOSERVICE_OFFLINE);
 
             if (mSocketTransportService)
                 mSocketTransportService->SetOffline(true);
@@ -1072,7 +1078,7 @@ nsIOService::SetOffline(bool offline)
             if (observerService)
                 observerService->NotifyObservers(subject,
                                                  NS_IOSERVICE_OFFLINE_STATUS_TOPIC,
-                                                 offlineString.get());
+                                                 u"" NS_IOSERVICE_OFFLINE);
         }
         else if (!offline && mOffline) {
             // go online
@@ -1187,13 +1193,12 @@ nsIOService::SetConnectivityInternal(bool aConnectivity)
     } else {
         // If we were previously online and lost connectivity
         // send the OFFLINE notification
-        const nsLiteralString offlineString(u"" NS_IOSERVICE_OFFLINE);
         observerService->NotifyObservers(static_cast<nsIIOService *>(this),
                                          NS_IOSERVICE_GOING_OFFLINE_TOPIC,
-                                         offlineString.get());
+                                         u"" NS_IOSERVICE_OFFLINE);
         observerService->NotifyObservers(static_cast<nsIIOService *>(this),
                                          NS_IOSERVICE_OFFLINE_STATUS_TOPIC,
-                                         offlineString.get());
+                                         u"" NS_IOSERVICE_OFFLINE);
     }
     return NS_OK;
 }
@@ -1803,6 +1808,8 @@ nsIOService::SpeculativeConnectInternal(nsIURI *aURI,
     NS_ENSURE_SUCCESS(rv, rv);
 
     nsCOMPtr<nsIPrincipal> loadingPrincipal = aPrincipal;
+
+    NS_ASSERTION(aPrincipal, "We expect passing a principal here.");
 
     // If the principal is given, we use this prinicpal directly. Otherwise,
     // we fallback to use the system principal.

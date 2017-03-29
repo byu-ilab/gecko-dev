@@ -18,6 +18,7 @@
 #include "mozilla/gfx/Triangle.h"       // for Triangle, TexturedTriangle
 #include "mozilla/layers/CompositorTypes.h"  // for DiagnosticTypes, etc
 #include "mozilla/layers/LayersTypes.h"  // for LayersBackend
+#include "mozilla/layers/TextureSourceProvider.h"
 #include "mozilla/widget/CompositorWidget.h"
 #include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
 #include "nsRegion.h"
@@ -130,10 +131,8 @@ class CompositingRenderTarget;
 class CompositorBridgeParent;
 class LayerManagerComposite;
 class CompositorOGL;
-class CompositorD3D9;
 class CompositorD3D11;
 class BasicCompositor;
-class TextureHost;
 class TextureReadLock;
 
 enum SurfaceInitMode
@@ -180,39 +179,20 @@ enum SurfaceInitMode
  * The target and viewport methods can be called before any DrawQuad call and
  * affect any subsequent DrawQuad calls.
  */
-class Compositor
+class Compositor : public TextureSourceProvider
 {
 protected:
   virtual ~Compositor();
 
 public:
-  NS_INLINE_DECL_REFCOUNTING(Compositor)
-
   explicit Compositor(widget::CompositorWidget* aWidget,
                       CompositorBridgeParent* aParent = nullptr);
 
-  virtual already_AddRefed<DataTextureSource> CreateDataTextureSource(TextureFlags aFlags = TextureFlags::NO_FLAGS) = 0;
-
-  virtual already_AddRefed<DataTextureSource>
-  CreateDataTextureSourceAround(gfx::DataSourceSurface* aSurface) { return nullptr; }
-
-  virtual already_AddRefed<DataTextureSource>
-  CreateDataTextureSourceAroundYCbCr(TextureHost* aTexture) { return nullptr; }
-
   virtual bool Initialize(nsCString* const out_failureReason) = 0;
-  virtual void Destroy();
+  virtual void Destroy() override;
   bool IsDestroyed() const { return mIsDestroyed; }
 
   virtual void DetachWidget() { mWidget = nullptr; }
-
-  /**
-   * Return true if the effect type is supported.
-   *
-   * By default Compositor implementations should support all effects but in
-   * some rare cases it is not possible to support an effect efficiently.
-   * This is the case for BasicCompositor with EffectYCbCr.
-   */
-  virtual bool SupportsEffect(EffectTypes aEffect) { return true; }
 
   /**
    * Request a texture host identifier that may be used for creating textures
@@ -225,7 +205,6 @@ public:
    * Properties of the compositor.
    */
   virtual bool CanUseCanvasLayerForSize(const gfx::IntSize& aSize) = 0;
-  virtual int32_t GetMaxTextureSize() const = 0;
 
   /**
    * Set the target for rendering. Results will have been written to aTarget by
@@ -470,9 +449,18 @@ public:
   virtual LayersBackend GetBackendType() const = 0;
 
   virtual CompositorOGL* AsCompositorOGL() { return nullptr; }
-  virtual CompositorD3D9* AsCompositorD3D9() { return nullptr; }
   virtual CompositorD3D11* AsCompositorD3D11() { return nullptr; }
   virtual BasicCompositor* AsBasicCompositor() { return nullptr; }
+
+  virtual Compositor* AsCompositor() override {
+    return this;
+  }
+
+  TimeStamp GetLastCompositionEndTime() const override {
+    return mLastCompositionEndTime;
+  }
+
+  bool NotifyNotUsedAfterComposition(TextureHost* aTextureHost) override;
 
   /**
    * Each Compositor has a unique ID.
@@ -542,52 +530,13 @@ public:
     mScreenRotation = aRotation;
   }
 
-  TimeStamp GetCompositionTime() const {
-    return mCompositionTime;
-  }
-  void SetCompositionTime(TimeStamp aTimeStamp) {
-    mCompositionTime = aTimeStamp;
-    if (!mCompositionTime.IsNull() && !mCompositeUntilTime.IsNull() &&
-        mCompositionTime >= mCompositeUntilTime) {
-      mCompositeUntilTime = TimeStamp();
-    }
-  }
-
-  void CompositeUntil(TimeStamp aTimeStamp) {
-    if (mCompositeUntilTime.IsNull() ||
-        mCompositeUntilTime < aTimeStamp) {
-      mCompositeUntilTime = aTimeStamp;
-    }
-  }
-  TimeStamp GetCompositeUntilTime() const {
-    return mCompositeUntilTime;
-  }
-
   // A stale Compositor has no CompositorBridgeParent; it will not process
   // frames and should not be used.
   void SetInvalid();
-  bool IsValid() const;
+  virtual bool IsValid() const override;
   CompositorBridgeParent* GetCompositorBridgeParent() const {
     return mParent;
   }
-
-  /// Most compositor backends operate asynchronously under the hood. This
-  /// means that when a layer stops using a texture it is often desirable to
-  /// wait for the end of the next composition before releasing the texture's
-  /// ReadLock.
-  /// This function provides a convenient way to do this delayed unlocking, if
-  /// the texture itself requires it.
-  void UnlockAfterComposition(TextureHost* aTexture);
-
-  /// Most compositor backends operate asynchronously under the hood. This
-  /// means that when a layer stops using a texture it is often desirable to
-  /// wait for the end of the next composition before NotifyNotUsed() call.
-  /// This function provides a convenient way to do this delayed NotifyNotUsed()
-  /// call, if the texture itself requires it.
-  /// See bug 1260611 and bug 1252835
-  void NotifyNotUsedAfterComposition(TextureHost* aTextureHost);
-
-  void FlushPendingNotifyNotUsed();
 
 protected:
   void DrawDiagnosticsInternal(DiagnosticFlags aFlags,
@@ -597,9 +546,6 @@ protected:
                                uint32_t aFlashCounter);
 
   bool ShouldDrawDiagnostics(DiagnosticFlags);
-
-  // Should be called at the end of each composition.
-  void ReadUnlockTextures();
 
   /**
    * Given a layer rect, clip, and transform, compute the area of the backdrop that
@@ -638,30 +584,9 @@ protected:
                            const gfx::Rect& aVisibleRect);
 
   /**
-   * An array of locks that will need to be unlocked after the next composition.
-   */
-  nsTArray<RefPtr<TextureHost>> mUnlockAfterComposition;
-
-  /**
-   * An array of TextureHosts that will need to call NotifyNotUsed() after the next composition.
-   */
-  nsTArray<RefPtr<TextureHost>> mNotifyNotUsedAfterComposition;
-
-  /**
    * Last Composition end time.
    */
   TimeStamp mLastCompositionEndTime;
-
-  /**
-   * Render time for the current composition.
-   */
-  TimeStamp mCompositionTime;
-  /**
-   * When nonnull, during rendering, some compositable indicated that it will
-   * change its rendering at this time. In order not to miss it, we composite
-   * on every vsync until this time occurs (this is the latest such time).
-   */
-  TimeStamp mCompositeUntilTime;
 
   uint32_t mCompositorID;
   DiagnosticTypes mDiagnosticTypes;

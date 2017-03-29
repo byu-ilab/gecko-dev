@@ -14,6 +14,7 @@
 #include "nsIScrollPositionListener.h"
 #include "nsDisplayList.h"
 #include "nsIAnonymousContentCreator.h"
+#include "gfxPrefs.h"
 
 class nsPresContext;
 class nsRenderingContext;
@@ -44,12 +45,6 @@ public:
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) override;
 
-  mozilla::WritingMode GetWritingMode() const override
-  {
-    return nsFrame::GetWritingModeDeferringToRootElem();
-  }
-
-#ifdef DEBUG
   virtual void SetInitialChildList(ChildListID     aListID,
                                    nsFrameList&    aChildList) override;
   virtual void AppendFrames(ChildListID     aListID,
@@ -57,6 +52,7 @@ public:
   virtual void InsertFrames(ChildListID     aListID,
                             nsIFrame*       aPrevFrame,
                             nsFrameList&    aFrameList) override;
+#ifdef DEBUG
   virtual void RemoveFrame(ChildListID     aListID,
                            nsIFrame*       aOldFrame) override;
 #endif
@@ -125,6 +121,10 @@ public:
   nsRect CanvasArea() const;
 
 protected:
+  // Utility function to propagate the WritingMode from our first child to
+  // 'this' and all its ancestors.
+  void MaybePropagateRootElementWritingMode();
+
   // Data members
   bool                      mDoPaintFocus;
   bool                      mAddedScrollPositionListener;
@@ -162,19 +162,22 @@ public:
     // We need to override so we don't consider border-radius.
     aOutFrames->AppendElement(mFrame);
   }
+  virtual already_AddRefed<Layer> BuildLayer(nsDisplayListBuilder* aBuilder,
+                                             LayerManager* aManager,
+                                             const ContainerLayerParameters& aContainerParameters) override;
+  virtual void CreateWebRenderCommands(mozilla::wr::DisplayListBuilder& aBuilder,
+                                       nsTArray<WebRenderParentCommand>& aParentCommands,
+                                       mozilla::layers::WebRenderDisplayItemLayer* aLayer) override;
 
   virtual LayerState GetLayerState(nsDisplayListBuilder* aBuilder,
                                    LayerManager* aManager,
                                    const ContainerLayerParameters& aParameters) override
   {
-    if (ForceActiveLayers()) {
+    if (ForceActiveLayers() || gfxPrefs::LayersAllowCanvasBackgroundColorLayers()) {
       return mozilla::LAYER_ACTIVE;
     }
     return mozilla::LAYER_NONE;
   }
-  virtual already_AddRefed<Layer> BuildLayer(nsDisplayListBuilder* aBuilder,
-                                             LayerManager* aManager,
-                                             const ContainerLayerParameters& aContainerParameters) override;
   virtual void Paint(nsDisplayListBuilder* aBuilder,
                      nsRenderingContext* aCtx) override;
 

@@ -9,6 +9,7 @@
 
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/BindingDeclarations.h"
+#include "mozilla/dom/Fetch.h"
 #include "mozilla/dom/Nullable.h"
 #include "mozilla/ErrorResult.h"
 #include "nsIDOMNavigator.h"
@@ -25,7 +26,6 @@ class nsPluginArray;
 class nsMimeTypeArray;
 class nsPIDOMWindowInner;
 class nsIDOMNavigatorSystemMessages;
-class nsDOMDeviceStorage;
 class nsIPrincipal;
 class nsIURI;
 
@@ -74,10 +74,10 @@ class Connection;
 } // namespace network
 
 class PowerManager;
-class DeviceStorageAreaListener;
 class Presentation;
 class LegacyMozTCPSocket;
 class VRDisplay;
+class VRServiceTest;
 class StorageManager;
 
 namespace time {
@@ -194,18 +194,6 @@ public:
   void RemoveIdleObserver(MozIdleObserver& aObserver, ErrorResult& aRv);
   already_AddRefed<WakeLock> RequestWakeLock(const nsAString &aTopic,
                                              ErrorResult& aRv);
-  DeviceStorageAreaListener* GetDeviceStorageAreaListener(ErrorResult& aRv);
-
-  already_AddRefed<nsDOMDeviceStorage> GetDeviceStorage(const nsAString& aType,
-                                                        ErrorResult& aRv);
-
-  void GetDeviceStorages(const nsAString& aType,
-                         nsTArray<RefPtr<nsDOMDeviceStorage> >& aStores,
-                         ErrorResult& aRv);
-
-  already_AddRefed<nsDOMDeviceStorage>
-  GetDeviceStorageByNameAndType(const nsAString& aName, const nsAString& aType,
-                                ErrorResult& aRv);
 
   DesktopNotificationCenter* GetMozNotification(ErrorResult& aRv);
   already_AddRefed<LegacyMozTCPSocket> MozTCPSocket();
@@ -216,6 +204,7 @@ public:
   GamepadServiceTest* RequestGamepadServiceTest();
   already_AddRefed<Promise> GetVRDisplays(ErrorResult& aRv);
   void GetActiveVRDisplays(nsTArray<RefPtr<VRDisplay>>& aDisplays) const;
+  VRServiceTest* RequestVRServiceTest();
 #ifdef MOZ_TIME_MANAGER
   time::TimeManager* GetMozTime(ErrorResult& aRv);
 #endif // MOZ_TIME_MANAGER
@@ -226,7 +215,7 @@ public:
   Presentation* GetPresentation(ErrorResult& aRv);
 
   bool SendBeacon(const nsAString& aUrl,
-                  const Nullable<ArrayBufferOrArrayBufferViewOrBlobOrFormDataOrUSVStringOrURLSearchParams>& aData,
+                  const Nullable<fetch::BodyInit>& aData,
                   ErrorResult& aRv);
 
   void MozGetUserMedia(const MediaStreamConstraints& aConstraints,
@@ -290,9 +279,6 @@ private:
   bool CheckPermission(const char* type);
   static bool CheckPermission(nsPIDOMWindowInner* aWindow, const char* aType);
 
-  already_AddRefed<nsDOMDeviceStorage> FindDeviceStorage(const nsAString& aName,
-                                                         const nsAString& aType);
-
   // This enum helps SendBeaconInternal to apply different behaviors to body
   // types.
   enum BeaconType {
@@ -320,14 +306,13 @@ private:
   RefPtr<system::AudioChannelManager> mAudioChannelManager;
 #endif
   RefPtr<MediaDevices> mMediaDevices;
-  nsTArray<nsWeakPtr> mDeviceStorageStores;
   RefPtr<time::TimeManager> mTimeManager;
   RefPtr<ServiceWorkerContainer> mServiceWorkerContainer;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
-  RefPtr<DeviceStorageAreaListener> mDeviceStorageAreaListener;
   RefPtr<Presentation> mPresentation;
   RefPtr<GamepadServiceTest> mGamepadServiceTest;
   nsTArray<RefPtr<Promise> > mVRGetDisplaysPromises;
+  RefPtr<VRServiceTest> mVRServiceTest;
   nsTArray<uint32_t> mRequestedVibrationPattern;
   RefPtr<StorageManager> mStorageManager;
 };

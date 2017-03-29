@@ -4,9 +4,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/dom/MutableBlobStorage.h"
+#include "MutableBlobStorage.h"
+#include "MemoryBlobImpl.h"
 #include "mozilla/CheckedInt.h"
-#include "mozilla/dom/File.h"
+#include "mozilla/Preferences.h"
+#include "File.h"
 #include "nsAnonymousTemporaryFile.h"
 #include "nsNetCID.h"
 #include "nsProxyRelease.h"
@@ -73,7 +75,6 @@ public:
     : mBlobStorage(aBlobStorage)
     , mFD(aFD)
   {
-    MOZ_ASSERT(!NS_IsMainThread());
     MOZ_ASSERT(aBlobStorage);
     MOZ_ASSERT(aFD);
   }
@@ -109,6 +110,7 @@ public:
     : mBlobStorage(aBlobStorage)
   {
     MOZ_ASSERT(NS_IsMainThread());
+    MOZ_ASSERT(XRE_IsParentProcess());
     MOZ_ASSERT(aBlobStorage);
   }
 
@@ -116,14 +118,11 @@ public:
   Run() override
   {
     MOZ_ASSERT(!NS_IsMainThread());
+    MOZ_ASSERT(XRE_IsParentProcess());
 
     PRFileDesc* tempFD = nullptr;
     nsresult rv = NS_OpenAnonymousTemporaryFile(&tempFD);
     if (NS_WARN_IF(NS_FAILED(rv))) {
-      // In sandboxed context we are not allowed to create temporary files, but
-      // this doesn't mean that BlobStorage should fail. We can continue to
-      // store data in memory.  We don't change the storageType so that we don't
-      // try to create a temporary file again.
       return NS_OK;
     }
 
@@ -406,10 +405,10 @@ MutableBlobStorage::GetBlobWhenReady(nsISupports* aParent,
   RefPtr<BlobImpl> blobImpl;
 
   if (mData) {
-    blobImpl = new BlobImplMemory(mData, mDataLen,
+    blobImpl = new MemoryBlobImpl(mData, mDataLen,
                                   NS_ConvertUTF8toUTF16(aContentType));
 
-    mData = nullptr; // The BlobImplMemory takes ownership of the buffer
+    mData = nullptr; // The MemoryBlobImpl takes ownership of the buffer
     mDataLen = 0;
     mDataBufferLen = 0;
   } else {
@@ -532,9 +531,20 @@ MutableBlobStorage::ShouldBeTemporaryStorage(uint64_t aSize) const
 nsresult
 MutableBlobStorage::MaybeCreateTemporaryFile()
 {
-  nsresult rv = DispatchToIOThread(new CreateTemporaryFileRunnable(this));
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
+  if (XRE_IsParentProcess()) {
+    nsresult rv = DispatchToIOThread(new CreateTemporaryFileRunnable(this));
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+  } else {
+    RefPtr<MutableBlobStorage> self(this);
+    ContentChild::GetSingleton()->
+      AsyncOpenAnonymousTemporaryFile([self](PRFileDesc* prfile) {
+        if (prfile) {
+          // The ownership of the prfile is moved to the FileCreatedRunnable.
+          NS_DispatchToMainThread(new FileCreatedRunnable(self, prfile));
+        }
+      });
   }
 
   mStorageState = eWaitingForTemporaryFile;

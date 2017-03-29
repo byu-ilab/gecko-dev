@@ -399,7 +399,8 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
             if suite_category not in c["suite_definitions"]:
                 self.fatal("'%s' not defined in the config!")
 
-            if suite in ('browser-chrome-coverage', 'xpcshell-coverage', 'mochitest-devtools-chrome-coverage'):
+            if suite in ('browser-chrome-coverage', 'xpcshell-coverage',
+                         'mochitest-devtools-chrome-coverage', 'plain-chunked-coverage'):
                 base_cmd.append('--jscov-dir-prefix=%s' %
                                 dirs['abs_blob_upload_dir'])
 
@@ -697,6 +698,7 @@ class DesktopUnittest(TestingMixin, MercurialScript, BlobUploadMixin, MozbaseMix
                     env['MOZ_NODE_PATH'] = self.nodejs_path
                 env['MOZ_UPLOAD_DIR'] = self.query_abs_dirs()['abs_blob_upload_dir']
                 env['MINIDUMP_SAVE_PATH'] = self.query_abs_dirs()['abs_blob_upload_dir']
+                env['RUST_BACKTRACE'] = '1'
                 if not os.path.isdir(env['MOZ_UPLOAD_DIR']):
                     self.mkdir_p(env['MOZ_UPLOAD_DIR'])
 

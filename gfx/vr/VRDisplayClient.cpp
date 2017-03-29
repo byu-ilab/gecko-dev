@@ -76,16 +76,6 @@ VRDisplayClient::GetSensorState()
   return sensorState;
 }
 
-VRHMDSensorState
-VRDisplayClient::GetImmediateSensorState()
-{
-  VRHMDSensorState sensorState;
-
-  VRManagerChild *vm = VRManagerChild::Get();
-  Unused << vm->SendGetImmediateSensorState(mDisplayInfo.mDisplayID, &sensorState);
-  return sensorState;
-}
-
 const double kVRDisplayRAFMaxDuration = 32; // milliseconds
 
 void
@@ -113,7 +103,7 @@ VRDisplayClient::NotifyVsync()
   // Check if we need to trigger onVRDisplayPresentChange event
   if (bLastEventWasPresenting != isPresenting) {
     bLastEventWasPresenting = isPresenting;
-    vm->FireDOMVRDisplayPresentChangeEvent();
+    vm->FireDOMVRDisplayPresentChangeEvent(mDisplayInfo.mDisplayID);
   }
 
   // Check if we need to trigger onvrdisplayactivate event

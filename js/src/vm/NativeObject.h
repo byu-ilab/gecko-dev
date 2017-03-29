@@ -477,6 +477,10 @@ class NativeObject : public ShapedObject
 
     inline bool isInWholeCellBuffer() const;
 
+    static inline JS::Result<NativeObject*, JS::OOM&>
+    create(JSContext* cx, js::gc::AllocKind kind, js::gc::InitialHeap heap,
+           js::HandleShape shape, js::HandleObjectGroup group);
+
   protected:
 #ifdef DEBUG
     void checkShapeConsistency();
@@ -484,8 +488,8 @@ class NativeObject : public ShapedObject
     void checkShapeConsistency() { }
 #endif
 
-    Shape*
-    replaceWithNewEquivalentShape(JSContext* cx,
+    static Shape*
+    replaceWithNewEquivalentShape(JSContext* cx, HandleNativeObject obj,
                                   Shape* existingShape, Shape* newShape = nullptr,
                                   bool accessorShape = false);
 
@@ -503,7 +507,7 @@ class NativeObject : public ShapedObject
      */
     bool setSlotSpan(JSContext* cx, uint32_t span);
 
-    bool toDictionaryMode(JSContext* cx);
+    static MOZ_MUST_USE bool toDictionaryMode(JSContext* cx, HandleNativeObject obj);
 
   private:
     friend class TenuringTracer;
@@ -602,11 +606,14 @@ class NativeObject : public ShapedObject
     }
 
   public:
-    bool generateOwnShape(JSContext* cx, Shape* newShape = nullptr) {
-        return replaceWithNewEquivalentShape(cx, lastProperty(), newShape);
+    static MOZ_MUST_USE bool generateOwnShape(JSContext* cx, HandleNativeObject obj,
+                                              Shape* newShape = nullptr)
+    {
+        return replaceWithNewEquivalentShape(cx, obj, obj->lastProperty(), newShape);
     }
 
-    bool shadowingShapeChange(JSContext* cx, const Shape& shape);
+    static MOZ_MUST_USE bool shadowingShapeChange(JSContext* cx, HandleNativeObject obj,
+                                                  const Shape& shape);
     static bool clearFlag(JSContext* cx, HandleNativeObject obj, BaseShape::Flag flag);
 
     // The maximum number of slots in an object.
@@ -661,6 +668,13 @@ class NativeObject : public ShapedObject
      * false without leaving a pending exception on the context.
      */
     static bool growSlotsDontReportOOM(JSContext* cx, NativeObject* obj, uint32_t newCount);
+
+    /*
+     * Like growSlotsDontReportOOM but for dense elements. This will return
+     * false if we failed to allocate a dense element for some reason (OOM, too
+     * many dense elements, non-writable array length, etc).
+     */
+    static bool addDenseElementDontReportOOM(JSContext* cx, NativeObject* obj);
 
     bool hasDynamicSlots() const { return !!slots_; }
 
@@ -776,7 +790,8 @@ class NativeObject : public ShapedObject
                         unsigned flags, ShapeTable::Entry* entry, bool allowDictionary,
                         const AutoKeepShapeTables& keep);
 
-    bool fillInAfterSwap(JSContext* cx, const Vector<Value>& values, void* priv);
+    static MOZ_MUST_USE bool fillInAfterSwap(JSContext* cx, HandleNativeObject obj,
+                                             const Vector<Value>& values, void* priv);
 
   public:
     // Return true if this object has been converted from shared-immutable
@@ -1212,6 +1227,7 @@ class NativeObject : public ShapedObject
     }
 
     void setPrivateGCThing(gc::Cell* cell) {
+        CheckEdgeIsNotBlackToGray(this, cell);
         void** pprivate = &privateRef(numFixedSlots());
         privateWriteBarrierPre(pprivate);
         *pprivate = reinterpret_cast<void*>(cell);
@@ -1385,7 +1401,7 @@ NativeGetExistingProperty(JSContext* cx, HandleObject receiver, HandleNativeObje
 /* * */
 
 extern bool
-GetPropertyForNameLookup(JSContext* cx, HandleObject obj, HandleId id, MutableHandleValue vp);
+GetNameBoundInEnvironment(JSContext* cx, HandleObject env, HandleId id, MutableHandleValue vp);
 
 } /* namespace js */
 

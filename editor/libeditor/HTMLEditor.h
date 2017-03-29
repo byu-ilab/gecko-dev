@@ -10,11 +10,11 @@
 #include "mozilla/CSSEditUtils.h"
 #include "mozilla/StyleSheet.h"
 #include "mozilla/TextEditor.h"
+#include "mozilla/UniquePtr.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/File.h"
 
 #include "nsAttrName.h"
-#include "nsAutoPtr.h"
 #include "nsCOMPtr.h"
 #include "nsIContentFilter.h"
 #include "nsICSSLoaderObserver.h"
@@ -38,7 +38,6 @@
 #include "nsTArray.h"
 
 class nsDocumentFragment;
-class nsIDOMKeyEvent;
 class nsITransferable;
 class nsIClipboard;
 class nsILinkHandler;
@@ -100,6 +99,9 @@ public:
 
   HTMLEditor();
 
+  virtual HTMLEditor* AsHTMLEditor() override { return this; }
+  virtual const HTMLEditor* AsHTMLEditor() const override { return this; }
+
   bool GetReturnInParagraphCreatesNewParagraph();
   Element* GetSelectionContainer();
 
@@ -107,9 +109,9 @@ public:
   NS_IMETHOD GetPreferredIMEState(widget::IMEState* aState) override;
 
   // TextEditor overrides
-  NS_IMETHOD GetIsDocumentEditable(bool* aIsDocumentEditable) override;
   NS_IMETHOD BeginningOfDocument() override;
-  virtual nsresult HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent) override;
+  virtual nsresult HandleKeyPressEvent(
+                     WidgetKeyboardEvent* aKeyboardEvent) override;
   virtual already_AddRefed<nsIContent> GetFocusedContent() override;
   virtual already_AddRefed<nsIContent> GetFocusedContentForIME() override;
   virtual bool IsActiveInDOMWindow() override;
@@ -671,11 +673,6 @@ protected:
                                   int32_t* insertOffset);
 
   /**
-   * Small utility routine to test the eEditorReadonly bit.
-   */
-  bool IsModifiable();
-
-  /**
    * Helpers for block transformations.
    */
   nsresult MakeDefinitionItem(const nsAString& aItemType);
@@ -828,7 +825,7 @@ protected:
   bool mCRInParagraphCreatesParagraph;
 
   bool mCSSAware;
-  nsAutoPtr<CSSEditUtils> mCSSEditUtils;
+  UniquePtr<CSSEditUtils> mCSSEditUtils;
 
   // Used by GetFirstSelectedCell and GetNextSelectedCell
   int32_t  mSelectedCellIndex;

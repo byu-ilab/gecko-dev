@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+/* eslint-env mozilla/browser-window */
+
 Components.utils.import("resource://gre/modules/AppConstants.jsm");
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
@@ -1009,7 +1011,7 @@ PlacesToolbar.prototype = {
 
     this._openedMenuButton = null;
     while (this._rootElt.hasChildNodes()) {
-      this._rootElt.removeChild(this._rootElt.firstChild);
+      this._rootElt.firstChild.remove();
     }
 
     let cc = this._resultNode.childCount;
@@ -1950,7 +1952,7 @@ PlacesPanelMenuView.prototype = {
 
     // Container is the toolbar itself.
     while (this._rootElt.hasChildNodes()) {
-      this._rootElt.removeChild(this._rootElt.firstChild);
+      this._rootElt.firstChild.remove();
     }
 
     for (let i = 0; i < this._resultNode.childCount; ++i) {

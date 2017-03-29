@@ -10,6 +10,7 @@
 #include "mozilla/StyleBackendType.h"
 #include "mozilla/ServoBindings.h"
 #include "mozilla/ServoCSSRuleList.h"
+#include "mozilla/css/GroupRule.h"
 #include "mozilla/dom/CSSRuleList.h"
 
 #include "mozAutoDocUpdate.h"
@@ -18,20 +19,42 @@ using namespace mozilla::dom;
 
 namespace mozilla {
 
+// -------------------------------
+// CSS Style Sheet Inner Data Container
+//
+
+ServoStyleSheetInner::ServoStyleSheetInner(CORSMode aCORSMode,
+                                           ReferrerPolicy aReferrerPolicy,
+                                           const SRIMetadata& aIntegrity)
+  : StyleSheetInfo(aCORSMode, aReferrerPolicy, aIntegrity)
+{
+}
+
 ServoStyleSheet::ServoStyleSheet(css::SheetParsingMode aParsingMode,
                                  CORSMode aCORSMode,
                                  net::ReferrerPolicy aReferrerPolicy,
                                  const dom::SRIMetadata& aIntegrity)
   : StyleSheet(StyleBackendType::Servo, aParsingMode)
-  , mSheetInfo(aCORSMode, aReferrerPolicy, aIntegrity)
 {
+  mInner = new ServoStyleSheetInner(aCORSMode, aReferrerPolicy, aIntegrity);
+  mInner->AddSheet(this);
+}
+
+ServoStyleSheet::ServoStyleSheet(const ServoStyleSheet& aCopy,
+                                 ServoStyleSheet* aParentToUse,
+                                 css::ImportRule* aOwnerRuleToUse,
+                                 nsIDocument* aDocumentToUse,
+                                 nsINode* aOwningNodeToUse)
+  : StyleSheet(aCopy, aDocumentToUse, aOwningNodeToUse)
+{
+  mParent = aParentToUse;
 }
 
 ServoStyleSheet::~ServoStyleSheet()
 {
   UnparentChildren();
 
-  DropSheet();
+  DropRuleList();
 }
 
 // QueryInterface implementation for ServoStyleSheet
@@ -53,7 +76,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 bool
 ServoStyleSheet::HasRules() const
 {
-  return mSheet && Servo_StyleSheet_HasRules(mSheet);
+  return Inner()->mSheet && Servo_StyleSheet_HasRules(Inner()->mSheet);
 }
 
 nsresult
@@ -74,13 +97,13 @@ ServoStyleSheet::ParseSheet(css::Loader* aLoader,
   NS_ENSURE_SUCCESS(rv, rv);
 
   NS_ConvertUTF16toUTF8 input(aInput);
-  if (!mSheet) {
-    mSheet =
+  if (!Inner()->mSheet) {
+    Inner()->mSheet =
       Servo_StyleSheet_FromUTF8Bytes(aLoader, this, &input, mParsingMode,
                                      &baseString, base, referrer,
                                      principal).Consume();
   } else {
-    Servo_StyleSheet_ClearAndUpdate(mSheet, aLoader, this, &input, base,
+    Servo_StyleSheet_ClearAndUpdate(Inner()->mSheet, aLoader, this, &input, base,
                                     referrer, principal);
   }
 
@@ -90,14 +113,7 @@ ServoStyleSheet::ParseSheet(css::Loader* aLoader,
 void
 ServoStyleSheet::LoadFailed()
 {
-  mSheet = Servo_StyleSheet_Empty(mParsingMode).Consume();
-}
-
-void
-ServoStyleSheet::DropSheet()
-{
-  mSheet = nullptr;
-  DropRuleList();
+  Inner()->mSheet = Servo_StyleSheet_Empty(mParsingMode).Consume();
 }
 
 void
@@ -116,12 +132,28 @@ ServoStyleSheet::GetDOMOwnerRule() const
   return nullptr;
 }
 
+already_AddRefed<StyleSheet>
+ServoStyleSheet::Clone(StyleSheet* aCloneParent,
+                       css::ImportRule* aCloneOwnerRule,
+                       nsIDocument* aCloneDocument,
+                       nsINode* aCloneOwningNode) const
+{
+  RefPtr<StyleSheet> clone = new ServoStyleSheet(*this,
+    static_cast<ServoStyleSheet*>(aCloneParent),
+    aCloneOwnerRule,
+    aCloneDocument,
+    aCloneOwningNode);
+  return clone.forget();
+}
+
 CSSRuleList*
 ServoStyleSheet::GetCssRulesInternal(ErrorResult& aRv)
 {
   if (!mRuleList) {
-    RefPtr<ServoCssRules> rawRules = Servo_StyleSheet_GetRules(mSheet).Consume();
-    mRuleList = new ServoCSSRuleList(this, rawRules.forget());
+    RefPtr<ServoCssRules> rawRules =
+      Servo_StyleSheet_GetRules(Inner()->mSheet).Consume();
+    mRuleList = new ServoCSSRuleList(rawRules.forget());
+    mRuleList->SetStyleSheet(this);
   }
   return mRuleList;
 }
@@ -169,6 +201,16 @@ ServoStyleSheet::DeleteRuleInternal(uint32_t aIndex, ErrorResult& aRv)
   if (!aRv.Failed() && mDocument) {
     mDocument->StyleRuleRemoved(this, rule);
   }
+}
+
+nsresult
+ServoStyleSheet::InsertRuleIntoGroupInternal(const nsAString& aRule,
+                                             css::GroupRule* aGroup,
+                                             uint32_t aIndex)
+{
+  auto rules = static_cast<ServoCSSRuleList*>(aGroup->CssRules());
+  MOZ_ASSERT(rules->GetParentRule() == aGroup);
+  return rules->InsertRule(aRule, aIndex);
 }
 
 } // namespace mozilla

@@ -15,10 +15,12 @@ EXPORTS += [
     'DisplayListClipState.h',
     'FrameLayerBuilder.h',
     'LayerState.h',
+    'nsCSSRenderingBorders.h',
     'nsDisplayItemTypes.h',
     'nsDisplayItemTypesList.h',
     'nsDisplayList.h',
     'nsDisplayListInvalidation.h',
+    'nsImageRenderer.h',
 ]
 
 EXPORTS.mozilla += [
@@ -39,6 +41,7 @@ UNIFIED_SOURCES += [
     'nsCSSRenderingBorders.cpp',
     'nsDisplayList.cpp',
     'nsDisplayListInvalidation.cpp',
+    'nsImageRenderer.cpp',
     'PaintTracker.cpp',
 ]
 

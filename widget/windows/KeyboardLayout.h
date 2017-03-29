@@ -390,6 +390,9 @@ private:
   // mIsOverridingKeyboardLayout is true if the instance temporarily overriding
   // keyboard layout with specified by the constructor.
   bool    mIsOverridingKeyboardLayout;
+  // mCanIgnoreModifierStateAtKeyPress is true if it's allowed to remove
+  // Ctrl or Alt modifier state at dispatching eKeyPress.
+  bool    mCanIgnoreModifierStateAtKeyPress;
 
   nsTArray<FakeCharMsg>* mFakeCharMsgs;
 
@@ -452,7 +455,7 @@ private:
 
   UINT GetScanCodeWithExtendedFlag() const;
 
-  // The result is one of nsIDOMKeyEvent::DOM_KEY_LOCATION_*.
+  // The result is one of eKeyLocation*.
   uint32_t GetKeyLocation() const;
 
   /**
@@ -664,6 +667,8 @@ private:
 
   static const MSG sEmptyMSG;
 
+  static MSG sLastKeyMSG;
+
   static bool IsEmptyMSG(const MSG& aMSG)
   {
     return !memcmp(&aMSG, &sEmptyMSG, sizeof(MSG));
@@ -673,6 +678,13 @@ private:
   {
     return mLastInstance && !IsEmptyMSG(mLastInstance->mRemovingMsg);
   }
+
+public:
+  /**
+   * Returns last key MSG.  If no key MSG has been received yet, the result
+   * is empty MSG (i.e., .message is WM_NULL).
+   */
+  static const MSG& LastKeyMSG() { return sLastKeyMSG; }
 };
 
 class KeyboardLayout

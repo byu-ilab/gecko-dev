@@ -11,12 +11,13 @@
 #include "mozilla/BasePrincipal.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/net/NeckoChannelParams.h"
-#include "nsPrincipal.h"
+#include "ExpandedPrincipal.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsIURI.h"
 #include "nsNetUtil.h"
 #include "mozilla/LoadInfo.h"
-#include "nsNullPrincipal.h"
+#include "ContentPrincipal.h"
+#include "NullPrincipal.h"
 #include "nsServiceManagerUtils.h"
 #include "nsString.h"
 #include "nsTArray.h"
@@ -69,7 +70,7 @@ PrincipalInfoToPrincipal(const PrincipalInfo& aPrincipalInfo,
         return nullptr;
       }
 
-      principal = nsNullPrincipal::Create(info.attrs(), uri);
+      principal = NullPrincipal::Create(info.attrs(), uri);
       return principal.forget();
     }
 
@@ -93,6 +94,18 @@ PrincipalInfoToPrincipal(const PrincipalInfo& aPrincipalInfo,
         return nullptr;
       }
 
+      // When the principal is serialized, the origin is extract from it. This
+      // can fail, and in case, here we will havea Tvoid_t. If we have a string,
+      // it must match with what the_new_principal.getOrigin returns.
+      if (info.originNoSuffix().type() == ContentPrincipalInfoOriginNoSuffix::TnsCString) {
+        nsAutoCString originNoSuffix;
+        rv = principal->GetOriginNoSuffix(originNoSuffix);
+        if (NS_WARN_IF(NS_FAILED(rv)) ||
+            !info.originNoSuffix().get_nsCString().Equals(originNoSuffix)) {
+          MOZ_CRASH("If the origin was in the contentPrincipalInfo, it must be available when deserialized");
+        }
+      }
+
       return principal.forget();
     }
 
@@ -111,7 +124,8 @@ PrincipalInfoToPrincipal(const PrincipalInfo& aPrincipalInfo,
         whitelist.AppendElement(wlPrincipal);
       }
 
-      RefPtr<nsExpandedPrincipal> expandedPrincipal = new nsExpandedPrincipal(whitelist, info.attrs());
+      RefPtr<ExpandedPrincipal> expandedPrincipal =
+        ExpandedPrincipal::Create(whitelist, info.attrs());
       if (!expandedPrincipal) {
         NS_WARNING("could not instantiate expanded principal");
         return nullptr;
@@ -220,8 +234,18 @@ PrincipalToPrincipalInfo(nsIPrincipal* aPrincipal,
     return rv;
   }
 
+  ContentPrincipalInfoOriginNoSuffix infoOriginNoSuffix;
+
+  nsCString originNoSuffix;
+  rv = aPrincipal->GetOriginNoSuffix(originNoSuffix);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    infoOriginNoSuffix = void_t();
+  } else {
+    infoOriginNoSuffix = originNoSuffix;
+  }
+
   *aPrincipalInfo = ContentPrincipalInfo(aPrincipal->OriginAttributesRef(),
-                                         spec);
+                                         infoOriginNoSuffix, spec);
   return NS_OK;
 }
 

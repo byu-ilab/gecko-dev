@@ -14,8 +14,14 @@ elif toolkit == 'cocoa':
     DIRS += ['mac']
 else:
     DIRS += ['unix']
+    if 'gtk' in CONFIG['MOZ_WIDGET_TOOLKIT']:
+        DIRS += ['gtk']
+    elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
+        DIRS += ['android']
 
 XPIDL_SOURCES += [
+    'mozILocaleService.idl',
+    'mozIOSPreferences.idl',
     'nsICollation.idl',
     'nsILocale.idl',
     'nsILocaleService.idl',
@@ -26,7 +32,6 @@ XPIDL_MODULE = 'locale'
 
 EXPORTS += [
     'DateTimeFormat.h',
-    'nsCollation.h',
     'nsCollationCID.h',
     'nsILanguageAtomService.h',
     'nsIPlatformCharset.h',
@@ -36,26 +41,30 @@ EXPORTS += [
 ]
 
 EXPORTS.mozilla.intl += [
-    'LocaleService.h'
+    'LocaleService.h',
+    'OSPreferences.h',
 ]
 
 UNIFIED_SOURCES += [
     'LocaleService.cpp',
-    'nsCollation.cpp',
+    'nsCollationFactory.cpp',
     'nsLanguageAtomService.cpp',
     'nsLocale.cpp',
     'nsLocaleService.cpp',
     'nsScriptableDateFormat.cpp',
     'nsUConvPropertySearch.cpp',
+    'OSPreferences.cpp',
 ]
 
 if CONFIG['ENABLE_INTL_API']:
     UNIFIED_SOURCES += [
-        'DateTimeFormatICU.cpp',
+        'DateTimeFormat.cpp',
+        'nsCollation.cpp',
     ]
 else:
     UNIFIED_SOURCES += [
-        'DateTimeFormatUnix.cpp',
+        'DateTimeFormatAndroid.cpp',
+        'nsCollationAndroid.cpp',
     ]
 
 EXTRA_JS_MODULES += [

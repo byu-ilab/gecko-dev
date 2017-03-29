@@ -951,11 +951,17 @@ nsContextMenu.prototype = {
                    originPrincipal: this.principal,
                    referrerURI: gContextMenuContentData.documentURIObject,
                    referrerPolicy: gContextMenuContentData.referrerPolicy,
+                   frameOuterWindowID: gContextMenuContentData.frameOuterWindowID,
                    noReferrer: this.linkHasNoReferrer };
     for (let p in extra) {
       params[p] = extra[p];
     }
 
+    if (!this.isRemote) {
+      params.frameOuterWindowID = this.target.ownerGlobal
+                                      .QueryInterface(Ci.nsIInterfaceRequestor)
+                                      .getInterface(Ci.nsIDOMWindowUtils).outerWindowID;
+    }
     // If we want to change userContextId, we must be sure that we don't
     // propagate the referrer.
     if ("userContextId" in params &&
@@ -1128,10 +1134,12 @@ nsContextMenu.prototype = {
   // Change current window to the URL of the image, video, or audio.
   viewMedia: function(e) {
     let referrerURI = gContextMenuContentData.documentURIObject;
+    let systemPrincipal = Services.scriptSecurityManager.getSystemPrincipal();
     if (this.onCanvas) {
       this._canvasToBlobURL(this.target).then(function(blobURL) {
         openUILink(blobURL, e, { disallowInheritPrincipal: true,
-                                 referrerURI: referrerURI });
+                                 referrerURI: referrerURI,
+                                 originPrincipal: systemPrincipal});
       }, Cu.reportError);
     }
     else {
@@ -1733,8 +1741,13 @@ nsContextMenu.prototype = {
 
   mediaCommand : function CM_mediaCommand(command, data) {
     let mm = this.browser.messageManager;
+    let win = this.browser.ownerGlobal;
+    let windowUtils = win.QueryInterface(Ci.nsIInterfaceRequestor)
+                         .getInterface(Ci.nsIDOMWindowUtils);
     mm.sendAsyncMessage("ContextMenu:MediaCommand",
-                        {command: command, data: data},
+                        {command: command,
+                         data: data,
+                         handlingUserInput: windowUtils.isHandlingUserInput},
                         {element: this.target});
   },
 

@@ -34,6 +34,7 @@ enum class VRDeviceType : uint16_t {
   Oculus,
   OpenVR,
   OSVR,
+  Puppet,
   NumVRDeviceTypes
 };
 
@@ -204,6 +205,42 @@ struct VRHMDSensorState {
   }
 };
 
+struct VRControllerInfo
+{
+  VRDeviceType GetType() const { return mType; }
+  uint32_t GetControllerID() const { return mControllerID; }
+  const nsCString& GetControllerName() const { return mControllerName; }
+  dom::GamepadMappingType GetMappingType() const { return mMappingType; }
+  dom::GamepadHand GetHand() const { return mHand; }
+  uint32_t GetNumButtons() const { return mNumButtons; }
+  uint32_t GetNumAxes() const { return mNumAxes; }
+  uint32_t GetNumHaptics() const { return mNumHaptics; }
+
+  uint32_t mControllerID;
+  VRDeviceType mType;
+  nsCString mControllerName;
+  dom::GamepadMappingType mMappingType;
+  dom::GamepadHand mHand;
+  uint32_t mNumButtons;
+  uint32_t mNumAxes;
+  uint32_t mNumHaptics;
+
+  bool operator==(const VRControllerInfo& other) const {
+    return mType == other.mType &&
+           mControllerID == other.mControllerID &&
+           mControllerName == other.mControllerName &&
+           mMappingType == other.mMappingType &&
+           mHand == other.mHand &&
+           mNumButtons == other.mNumButtons &&
+           mNumAxes == other.mNumAxes &&
+           mNumHaptics == other.mNumHaptics;
+  }
+
+  bool operator!=(const VRControllerInfo& other) const {
+    return !(*this == other);
+  }
+};
+
 class VRSystemManager {
 public:
   static uint32_t AllocateDisplayID();
@@ -217,15 +254,18 @@ public:
   virtual bool Init() = 0;
   virtual void Destroy() = 0;
   virtual void GetHMDs(nsTArray<RefPtr<VRDisplayHost>>& aHMDResult) = 0;
+  virtual bool GetIsPresenting() = 0;
   virtual void HandleInput() = 0;
   virtual void GetControllers(nsTArray<RefPtr<VRControllerHost>>& aControllerResult) = 0;
   virtual void ScanForControllers() = 0;
   virtual void RemoveControllers() = 0;
-  void NewButtonEvent(uint32_t aIndex, uint32_t aButton, bool aPressed);
+  virtual void VibrateHaptic(uint32_t aControllerIdx, uint32_t aHapticIndex,
+                             double aIntensity, double aDuration, uint32_t aPromiseID) = 0;
+  virtual void StopVibrateHaptic(uint32_t aControllerIdx) = 0;
+  void NewButtonEvent(uint32_t aIndex, uint32_t aButton, bool aPressed, double aValue);
   void NewAxisMove(uint32_t aIndex, uint32_t aAxis, double aValue);
   void NewPoseState(uint32_t aIndex, const dom::GamepadPoseState& aPose);
-  void AddGamepad(const char* aID, dom::GamepadMappingType aMapping,
-                  dom::GamepadHand aHand, uint32_t aNumButtons, uint32_t aNumAxes);
+  void AddGamepad(const VRControllerInfo& controllerInfo);
   void RemoveGamepad(uint32_t aIndex);
 
 protected:
@@ -233,45 +273,6 @@ protected:
   virtual ~VRSystemManager() { }
 
   uint32_t mControllerCount;
-
-private:
-  virtual void HandleButtonPress(uint32_t aControllerIdx,
-                                 uint64_t aButtonPressed) = 0;
-  virtual void HandleAxisMove(uint32_t aControllerIdx, uint32_t aAxis,
-                              float aValue) = 0;
-  virtual void HandlePoseTracking(uint32_t aControllerIdx,
-                                  const dom::GamepadPoseState& aPose,
-                                  VRControllerHost* aController) = 0;
-};
-
-struct VRControllerInfo
-{
-  VRDeviceType GetType() const { return mType; }
-  uint32_t GetControllerID() const { return mControllerID; }
-  const nsCString& GetControllerName() const { return mControllerName; }
-  dom::GamepadMappingType GetMappingType() const { return mMappingType; }
-  uint32_t GetNumButtons() const { return mNumButtons; }
-  uint32_t GetNumAxes() const { return mNumAxes; }
-
-  uint32_t mControllerID;
-  VRDeviceType mType;
-  nsCString mControllerName;
-  dom::GamepadMappingType mMappingType;
-  uint32_t mNumButtons;
-  uint32_t mNumAxes;
-
-  bool operator==(const VRControllerInfo& other) const {
-    return mType == other.mType &&
-           mControllerID == other.mControllerID &&
-           mControllerName == other.mControllerName &&
-           mMappingType == other.mMappingType &&
-           mNumButtons == other.mNumButtons &&
-           mNumAxes == other.mNumAxes;
-  }
-
-  bool operator!=(const VRControllerInfo& other) const {
-    return !(*this == other);
-  }
 };
 
 } // namespace gfx

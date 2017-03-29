@@ -483,7 +483,17 @@ DocAccessible::Shutdown()
 
   mDependentIDsHash.Clear();
   mNodeToAccessibleMap.Clear();
-  ClearCache(mAccessibleCache);
+
+  for (auto iter = mAccessibleCache.Iter(); !iter.Done(); iter.Next()) {
+    Accessible* accessible = iter.Data();
+    MOZ_ASSERT(accessible);
+    if (accessible && !accessible->IsDefunct()) {
+      // Unlink parent to avoid its cleaning overhead in shutdown.
+      accessible->mParent = nullptr;
+      accessible->Shutdown();
+    }
+    iter.Remove();
+  }
 
   HyperTextAccessibleWrap::Shutdown();
 
@@ -2087,11 +2097,13 @@ DocAccessible::DoARIAOwnsRelocation(Accessible* aOwner)
           child->SetRelocated(true);
           children->InsertElementAt(arrayIdx, child);
 
-          insertIdx = child->IndexInParent() + 1;
-          arrayIdx++;
-
+          // Create subtree before adjusting the insertion index, since subtree
+          // creation may alter children in the container.
           CreateSubtree(child);
           FireEventsOnInsertion(aOwner);
+
+          insertIdx = child->IndexInParent() + 1;
+          arrayIdx++;
         }
       }
       continue;

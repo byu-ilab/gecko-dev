@@ -56,6 +56,7 @@
 #include "nsAboutProtocolUtils.h"
 
 #include "GeckoProfiler.h"
+#include "nsIInputStream.h"
 #include "nsIXULRuntime.h"
 #include "nsJSPrincipals.h"
 
@@ -179,7 +180,11 @@ public:
       }
   }
 
-  AsyncFreeSnowWhite() : mContinuation(false), mActive(false), mPurge(false) {}
+  AsyncFreeSnowWhite()
+    : Runnable("AsyncFreeSnowWhite")
+    , mContinuation(false)
+    , mActive(false)
+    , mPurge(false) {}
 
 public:
   bool mContinuation;
@@ -337,7 +342,7 @@ PrincipalImmuneToScriptPolicy(nsIPrincipal* aPrincipal)
     if (nsXPConnect::SecurityManager()->IsSystemPrincipal(aPrincipal))
         return true;
 
-    // nsExpandedPrincipal gets a free pass.
+    // ExpandedPrincipal gets a free pass.
     nsCOMPtr<nsIExpandedPrincipal> ep = do_QueryInterface(aPrincipal);
     if (ep)
         return true;
@@ -347,6 +352,15 @@ PrincipalImmuneToScriptPolicy(nsIPrincipal* aPrincipal)
     nsCOMPtr<nsIURI> principalURI;
     aPrincipal->GetURI(getter_AddRefs(principalURI));
     MOZ_ASSERT(principalURI);
+
+    // WebExtension principals gets a free pass.
+    nsString addonId;
+    aPrincipal->GetAddonId(addonId);
+    bool isWebExtension = !addonId.IsEmpty();
+    if (isWebExtension) {
+        return true;
+    }
+
     bool isAbout;
     nsresult rv = principalURI->SchemeIs("about", &isAbout);
     if (NS_SUCCEEDED(rv) && isAbout) {
@@ -564,6 +578,37 @@ CurrentWindowOrNull(JSContext* cx)
 {
     JSObject* glob = JS::CurrentGlobalOrNull(cx);
     return glob ? WindowOrNull(glob) : nullptr;
+}
+
+// Nukes all wrappers into or out of the given compartment, and prevents new
+// wrappers from being created. Additionally marks the compartment as
+// unscriptable after wrappers have been nuked.
+//
+// Note: This should *only* be called for browser or extension compartments.
+// Wrappers between web compartments must never be cut in web-observable
+// ways.
+void
+NukeAllWrappersForCompartment(JSContext* cx, JSCompartment* compartment,
+                              js::NukeReferencesToWindow nukeReferencesToWindow)
+{
+    // First, nuke all wrappers into or out of the target compartment. Once
+    // the compartment is marked as nuked, WrapperFactory will refuse to
+    // create new live wrappers for it, in either direction. This means that
+    // we need to be sure that we don't have any existing cross-compartment
+    // wrappers which may be replaced with dead wrappers during unrelated
+    // wrapper recomputation *before* we set that bit.
+    js::NukeCrossCompartmentWrappers(cx, js::AllCompartments(),
+                                     js::SingleCompartment(compartment),
+                                     nukeReferencesToWindow,
+                                     js::NukeAllReferences);
+
+    // At this point, we should cross-compartment wrappers for the nuked
+    // compartment. Set the wasNuked bit so WrapperFactory will return a
+    // DeadObjectProxy when asked to create a new wrapper for it, and mark as
+    // unscriptable.
+    auto compartmentPrivate = xpc::CompartmentPrivate::Get(compartment);
+    compartmentPrivate->wasNuked = true;
+    compartmentPrivate->scriptability.Block();
 }
 
 } // namespace xpc
@@ -843,7 +888,7 @@ XPCJSContext::FinalizeCallback(JSFreeOp* fop,
 }
 
 /* static */ void
-XPCJSContext::WeakPointerZoneGroupCallback(JSContext* cx, void* data)
+XPCJSContext::WeakPointerZonesCallback(JSContext* cx, void* data)
 {
     // Called before each sweeping slice -- after processing any final marking
     // triggered by barriers -- to clear out any references to things that are
@@ -927,9 +972,12 @@ class Watchdog
         {
             AutoLockWatchdog lock(this);
 
+            // Gecko uses thread private for accounting and has to clean up at thread exit.
+            // Therefore, even though we don't have a return value from the watchdog, we need to
+            // join it on shutdown.
             mThread = PR_CreateThread(PR_USER_THREAD, WatchdogMain, this,
                                       PR_PRIORITY_NORMAL, PR_GLOBAL_THREAD,
-                                      PR_UNJOINABLE_THREAD, 0);
+                                      PR_JOINABLE_THREAD, 0);
             if (!mThread)
                 NS_RUNTIMEABORT("PR_CreateThread failed!");
 
@@ -952,9 +1000,12 @@ class Watchdog
 
             // Wake up the watchdog, and wait for it to call us back.
             PR_NotifyCondVar(mWakeup);
-            PR_WaitCondVar(mWakeup, PR_INTERVAL_NO_TIMEOUT);
-            MOZ_ASSERT(!mShuttingDown);
         }
+
+        PR_JoinThread(mThread);
+
+        // The thread sets mShuttingDown to false as it exits.
+        MOZ_ASSERT(!mShuttingDown);
 
         // Destroy state.
         mThread = nullptr;
@@ -994,7 +1045,6 @@ class Watchdog
     {
         MOZ_ASSERT(!NS_IsMainThread());
         mShuttingDown = false;
-        PR_NotifyCondVar(mWakeup);
     }
 
     int32_t MinScriptRunTimeSeconds()
@@ -1253,6 +1303,9 @@ bool
 XPCJSContext::InterruptCallback(JSContext* cx)
 {
     XPCJSContext* self = XPCJSContext::Get();
+
+    // Now is a good time to turn on profiling if it's pending.
+    profiler_js_interrupt_callback();
 
     // Normally we record mSlowScriptCheckpoint when we start to process an
     // event. However, we can run JS outside of event handlers. This code takes
@@ -1529,7 +1582,7 @@ XPCJSContext::~XPCJSContext()
     // callbacks if we aren't careful. Null out the relevant callbacks.
     js::SetActivityCallback(Context(), nullptr, nullptr);
     JS_RemoveFinalizeCallback(Context(), FinalizeCallback);
-    JS_RemoveWeakPointerZoneGroupCallback(Context(), WeakPointerZoneGroupCallback);
+    JS_RemoveWeakPointerZonesCallback(Context(), WeakPointerZonesCallback);
     JS_RemoveWeakPointerCompartmentCallback(Context(), WeakPointerCompartmentCallback);
 
     // Clear any pending exception.  It might be an XPCWrappedJS, and if we try
@@ -1575,11 +1628,15 @@ XPCJSContext::~XPCJSContext()
 
 #ifdef MOZ_GECKO_PROFILER
     // Tell the profiler that the context is gone
-    if (PseudoStack* stack = profiler_get_pseudo_stack())
-        stack->sampleContext(nullptr);
+    profiler_clear_js_context();
 #endif
 
-    Preferences::UnregisterCallback(ReloadPrefsCallback, JS_OPTIONS_DOT_STR, this);
+    Preferences::UnregisterPrefixCallback(ReloadPrefsCallback,
+                                          JS_OPTIONS_DOT_STR, this);
+
+#ifdef FUZZING
+    Preferences::UnRegisterCallback(ReloadPrefsCallback, "fuzzing.enabled", this);
+#endif
 }
 
 // If |*anonymizeID| is non-zero and this is a user compartment, the name will
@@ -1940,7 +1997,7 @@ ReportZoneStats(const JS::ZoneStats& zStats,
         bool truncated = notableString.Length() < info.length;
 
         nsCString path = pathPrefix +
-            nsPrintfCString("strings/" STRING_LENGTH "%d, copies=%d, \"%s\"%s)/",
+            nsPrintfCString("strings/" STRING_LENGTH "%" PRIuSIZE ", copies=%d, \"%s\"%s)/",
                             info.length, info.numCopies, escapedString.get(),
                             truncated ? " (truncated)" : "");
 
@@ -2292,6 +2349,10 @@ ReportCompartmentStats(const JS::CompartmentStats& cStats,
     ZCREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("non-syntactic-lexical-scopes-table"),
         cStats.nonSyntacticLexicalScopesTable,
         "The non-syntactic lexical scopes table.");
+
+    ZCREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("template-literal-map"),
+        cStats.templateLiteralMap,
+        "The template literal registry.");
 
     ZCREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("jit-compartment"),
         cStats.jitCompartment,
@@ -3109,6 +3170,12 @@ AccumulateTelemetryCallback(int id, uint32_t sample, const char* key)
       case JS_TELEMETRY_AOT_USAGE:
         Telemetry::Accumulate(Telemetry::JS_AOT_USAGE, sample);
         break;
+      case JS_TELEMETRY_PRIVILEGED_PARSER_COMPILE_LAZY_AFTER_MS:
+        Telemetry::Accumulate(Telemetry::JS_PRIVILEGED_PARSER_COMPILE_LAZY_AFTER_MS, sample);
+        break;
+      case JS_TELEMETRY_WEB_PARSER_COMPILE_LAZY_AFTER_MS:
+        Telemetry::Accumulate(Telemetry::JS_WEB_PARSER_COMPILE_LAZY_AFTER_MS, sample);
+        break;
       default:
         MOZ_ASSERT_UNREACHABLE("Unexpected JS_TELEMETRY id");
     }
@@ -3435,13 +3502,12 @@ XPCJSContext::Initialize()
     mPrevDoCycleCollectionCallback = JS::SetDoCycleCollectionCallback(cx,
             DoCycleCollectionCallback);
     JS_AddFinalizeCallback(cx, FinalizeCallback, nullptr);
-    JS_AddWeakPointerZoneGroupCallback(cx, WeakPointerZoneGroupCallback, this);
+    JS_AddWeakPointerZonesCallback(cx, WeakPointerZonesCallback, this);
     JS_AddWeakPointerCompartmentCallback(cx, WeakPointerCompartmentCallback, this);
     JS_SetWrapObjectCallbacks(cx, &WrapObjectCallbacks);
     js::SetPreserveWrapperCallback(cx, PreserveWrapper);
 #ifdef MOZ_GECKO_PROFILER
-    if (PseudoStack* stack = profiler_get_pseudo_stack())
-        stack->sampleContext(cx);
+    profiler_set_js_context(cx);
 #endif
     JS_SetAccumulateTelemetryCallback(cx, AccumulateTelemetryCallback);
     js::SetActivityCallback(cx, ActivityCallback, this);
@@ -3484,7 +3550,12 @@ XPCJSContext::Initialize()
 
     // Watch for the JS boolean options.
     ReloadPrefsCallback(nullptr, this);
-    Preferences::RegisterCallback(ReloadPrefsCallback, JS_OPTIONS_DOT_STR, this);
+    Preferences::RegisterPrefixCallback(ReloadPrefsCallback,
+                                        JS_OPTIONS_DOT_STR, this);
+
+#ifdef FUZZING
+    Preferences::RegisterCallback(ReloadPrefsCallback, "fuzzing.enabled", this);
+#endif
 
     return NS_OK;
 }
@@ -3600,7 +3671,7 @@ XPCJSContext::BeforeProcessTask(bool aMightBlock)
             // "while (condition) thread.processNextEvent(true)", in case the
             // condition is triggered here by a Promise "then" callback.
 
-            NS_DispatchToMainThread(new Runnable());
+            NS_DispatchToMainThread(new Runnable("Empty_microtask_runnable"));
         }
     }
 
@@ -3644,11 +3715,11 @@ XPCJSContext::DebugDump(int16_t depth)
 {
 #ifdef DEBUG
     depth--;
-    XPC_LOG_ALWAYS(("XPCJSContext @ %x", this));
+    XPC_LOG_ALWAYS(("XPCJSContext @ %p", this));
         XPC_LOG_INDENT();
-        XPC_LOG_ALWAYS(("mJSContext @ %x", Context()));
+        XPC_LOG_ALWAYS(("mJSContext @ %p", Context()));
 
-        XPC_LOG_ALWAYS(("mWrappedJSClassMap @ %x with %d wrapperclasses(s)",
+        XPC_LOG_ALWAYS(("mWrappedJSClassMap @ %p with %d wrapperclasses(s)",
                         mWrappedJSClassMap, mWrappedJSClassMap->Count()));
         // iterate wrappersclasses...
         if (depth && mWrappedJSClassMap->Count()) {
@@ -3661,7 +3732,7 @@ XPCJSContext::DebugDump(int16_t depth)
         }
 
         // iterate wrappers...
-        XPC_LOG_ALWAYS(("mWrappedJSMap @ %x with %d wrappers(s)",
+        XPC_LOG_ALWAYS(("mWrappedJSMap @ %p with %d wrappers(s)",
                         mWrappedJSMap, mWrappedJSMap->Count()));
         if (depth && mWrappedJSMap->Count()) {
             XPC_LOG_INDENT();
@@ -3669,18 +3740,18 @@ XPCJSContext::DebugDump(int16_t depth)
             XPC_LOG_OUTDENT();
         }
 
-        XPC_LOG_ALWAYS(("mIID2NativeInterfaceMap @ %x with %d interface(s)",
+        XPC_LOG_ALWAYS(("mIID2NativeInterfaceMap @ %p with %d interface(s)",
                         mIID2NativeInterfaceMap,
                         mIID2NativeInterfaceMap->Count()));
 
-        XPC_LOG_ALWAYS(("mClassInfo2NativeSetMap @ %x with %d sets(s)",
+        XPC_LOG_ALWAYS(("mClassInfo2NativeSetMap @ %p with %d sets(s)",
                         mClassInfo2NativeSetMap,
                         mClassInfo2NativeSetMap->Count()));
 
-        XPC_LOG_ALWAYS(("mThisTranslatorMap @ %x with %d translator(s)",
+        XPC_LOG_ALWAYS(("mThisTranslatorMap @ %p with %d translator(s)",
                         mThisTranslatorMap, mThisTranslatorMap->Count()));
 
-        XPC_LOG_ALWAYS(("mNativeSetMap @ %x with %d sets(s)",
+        XPC_LOG_ALWAYS(("mNativeSetMap @ %p with %d sets(s)",
                         mNativeSetMap, mNativeSetMap->Count()));
 
         // iterate sets...
@@ -3693,7 +3764,7 @@ XPCJSContext::DebugDump(int16_t depth)
             XPC_LOG_OUTDENT();
         }
 
-        XPC_LOG_ALWAYS(("mPendingResult of %x", mPendingResult));
+        XPC_LOG_ALWAYS(("mPendingResult of %" PRIx32, static_cast<uint32_t>(mPendingResult)));
 
         XPC_LOG_OUTDENT();
 #endif

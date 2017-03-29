@@ -44,6 +44,7 @@
 
 class nsIFrame;
 class nsIDOMMozNamedAttrMap;
+class nsIMozBrowserFrame;
 class nsIURI;
 class nsIScrollableFrame;
 class nsAttrValueOrString;
@@ -340,6 +341,16 @@ public:
   virtual bool IsInteractiveHTMLContent(bool aIgnoreTabindex) const;
 
   /**
+   * Returns |this| as an nsIMozBrowserFrame* if the element is a frame or
+   * iframe element.
+   *
+   * We have this method, rather than using QI, so that we can use it during
+   * the servo traversal, where we can't QI DOM nodes because of non-thread-safe
+   * refcounts.
+   */
+  virtual nsIMozBrowserFrame* GetAsMozBrowserFrame() { return nullptr; }
+
+  /**
    * Is the attribute named stored in the mapped attributes?
    *
    * // XXXbz we use this method in HasAttributeDependentStyle, so svg
@@ -436,8 +447,6 @@ public:
     UnsetFlags(NODE_HAS_DIRTY_DESCENDANTS_FOR_SERVO);
   }
 
-  inline bool ShouldTraverseForServo();
-
   inline void NoteDirtyDescendantsForServo();
 
 #ifdef DEBUG
@@ -453,6 +462,29 @@ public:
   }
 
   void ClearServoData();
+
+  /**
+   * Gets the custom element data used by web components custom element.
+   * Custom element data is created at the first attempt to enqueue a callback.
+   *
+   * @return The custom element data or null if none.
+   */
+  inline CustomElementData* GetCustomElementData() const
+  {
+    nsDOMSlots *slots = GetExistingDOMSlots();
+    if (slots) {
+      return slots->mCustomElementData;
+    }
+    return nullptr;
+  }
+
+  /**
+   * Sets the custom element data, ownership of the
+   * callback data is taken by this element.
+   *
+   * @param aData The custom element data.
+   */
+  void SetCustomElementData(CustomElementData* aData);
 
 protected:
   /**
@@ -506,24 +538,39 @@ private:
   EventStates StyleStateFromLocks() const;
 
 protected:
-  // Methods for the ESM to manage state bits.  These will handle
-  // setting up script blockers when they notify, so no need to do it
-  // in the callers unless desired.
+  // Methods for the ESM, nsGlobalWindow and focus manager to manage state bits.
+  // These will handle setting up script blockers when they notify, so no need
+  // to do it in the callers unless desired.  States passed here must only be
+  // those in EXTERNALLY_MANAGED_STATES.
   virtual void AddStates(EventStates aStates)
   {
     NS_PRECONDITION(!aStates.HasAtLeastOneOfStates(INTRINSIC_STATES),
-                    "Should only be adding ESM-managed states here");
+                    "Should only be adding externally-managed states here");
     AddStatesSilently(aStates);
     NotifyStateChange(aStates);
   }
   virtual void RemoveStates(EventStates aStates)
   {
     NS_PRECONDITION(!aStates.HasAtLeastOneOfStates(INTRINSIC_STATES),
-                    "Should only be removing ESM-managed states here");
+                    "Should only be removing externally-managed states here");
     RemoveStatesSilently(aStates);
     NotifyStateChange(aStates);
   }
 public:
+  // Public methods to manage state bits in MANUALLY_MANAGED_STATES.
+  void AddManuallyManagedStates(EventStates aStates)
+  {
+    MOZ_ASSERT(MANUALLY_MANAGED_STATES.HasAllStates(aStates),
+               "Should only be adding manually-managed states here");
+    AddStates(aStates);
+  }
+  void RemoveManuallyManagedStates(EventStates aStates)
+  {
+    MOZ_ASSERT(MANUALLY_MANAGED_STATES.HasAllStates(aStates),
+               "Should only be removing manually-managed states here");
+    RemoveStates(aStates);
+  }
+
   virtual void UpdateEditableState(bool aNotify) override;
 
   virtual nsresult BindToTree(nsIDocument* aDocument, nsIContent* aParent,
@@ -607,6 +654,18 @@ public:
   virtual BorrowedAttrInfo GetAttrInfoAt(uint32_t aIndex) const override;
   virtual uint32_t GetAttrCount() const override;
   virtual bool IsNodeOfType(uint32_t aFlags) const override;
+
+  /**
+   * Get the class list of this element (this corresponds to the value of the
+   * class attribute).  This may be null if there are no classes, but that's not
+   * guaranteed (e.g. we could have class="").
+   */
+  const nsAttrValue* GetClasses() const {
+    if (MayHaveClass()) {
+      return DoGetClasses();
+    }
+    return nullptr;
+  }
 
 #ifdef DEBUG
   virtual void List(FILE* out = stdout, int32_t aIndent = 0) const override
@@ -771,6 +830,25 @@ public:
                            ErrorResult& aError);
   already_AddRefed<nsIHTMLCollection>
     GetElementsByClassName(const nsAString& aClassNames);
+
+  CSSPseudoElementType GetPseudoElementType() const {
+    if (!HasProperties()) {
+      return CSSPseudoElementType::NotPseudo;
+    }
+    nsresult rv = NS_OK;
+    auto raw = GetProperty(nsGkAtoms::pseudoProperty, &rv);
+    if (rv == NS_PROPTABLE_PROP_NOT_THERE) {
+      return CSSPseudoElementType::NotPseudo;
+    }
+    return CSSPseudoElementType(reinterpret_cast<uintptr_t>(raw));
+  }
+
+  void SetPseudoElementType(CSSPseudoElementType aPseudo) {
+    static_assert(sizeof(CSSPseudoElementType) <= sizeof(uintptr_t),
+                  "Need to be able to store this in a void*");
+    MOZ_ASSERT(aPseudo != CSSPseudoElementType::NotPseudo);
+    SetProperty(nsGkAtoms::pseudoProperty, reinterpret_cast<void*>(aPseudo));
+  }
 
 private:
   /**
@@ -1071,7 +1149,13 @@ public:
    */
   virtual BorrowedAttrInfo GetAttrInfo(int32_t aNamespaceID, nsIAtom* aName) const;
 
-  virtual void NodeInfoChanged()
+  /**
+   * Called when we have been adopted, and the information of the
+   * node has been changed.
+   *
+   * The new document can be reached via OwnerDoc().
+   */
+  virtual void NodeInfoChanged(nsIDocument* aOldDoc)
   {
   }
 
@@ -1319,16 +1403,17 @@ protected:
    * @param aName the localname of the attribute being set
    * @param aValue the value it's being set to represented as either a string or
    *        a parsed nsAttrValue. Alternatively, if the attr is being removed it
-   *        will be null. BeforeSetAttr is allowed to modify aValue by parsing
-   *        the string to an nsAttrValue (to avoid having to reparse it in
-   *        ParseAttribute).
+   *        will be null.
    * @param aNotify Whether we plan to notify document observers.
    */
   // Note that this is inlined so that when subclasses call it it gets
   // inlined.  Those calls don't go through a vtable.
   virtual nsresult BeforeSetAttr(int32_t aNamespaceID, nsIAtom* aName,
-                                 nsAttrValueOrString* aValue,
-                                 bool aNotify);
+                                 const nsAttrValueOrString* aValue,
+                                 bool aNotify)
+  {
+    return NS_OK;
+  }
 
   /**
    * Hook that is called by Element::SetAttr to allow subclasses to
@@ -1426,9 +1511,16 @@ protected:
   nsDOMTokenList* GetTokenList(nsIAtom* aAtom,
                                const DOMTokenListSupportedTokenArray aSupportedTokens = nullptr);
 
-  nsDataHashtable<nsPtrHashKey<DOMIntersectionObserver>, int32_t>* RegisteredIntersectionObservers();
+  nsDataHashtable<nsRefPtrHashKey<DOMIntersectionObserver>, int32_t>*
+    RegisteredIntersectionObservers();
 
 private:
+  /**
+   * Hook for implementing GetClasses.  This is guaranteed to only be
+   * called if the NODE_MAY_HAVE_CLASS flag is set.
+   */
+  const nsAttrValue* DoGetClasses() const;
+
   /**
    * Get this element's client area rect in app units.
    * @return the frame's client area

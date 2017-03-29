@@ -7,7 +7,10 @@ from __future__ import absolute_import, print_function, unicode_literals
 import re
 import copy
 import pprint
+import collections
 import voluptuous
+
+from .attributes import keymatch
 
 
 def validate_schema(schema, obj, msg_prefix):
@@ -34,13 +37,22 @@ def optionally_keyed_by(*arguments):
         'some-value': optionally_keyed_by(
             'test-platform', 'build-platform',
             Any('a', 'b', 'c'))
+
+    The resulting schema will allow nesting of `by-test-platform` and
+    `by-build-platform` in either order.
     """
-    subschema = arguments[-1]
+    schema = arguments[-1]
     fields = arguments[:-1]
-    options = [subschema]
-    for field in fields:
-        options.append({'by-' + field: {basestring: subschema}})
-    return voluptuous.Any(*options)
+
+    # build the nestable schema by generating schema = Any(schema,
+    # by-fld1, by-fld2, by-fld3) once for each field.  So we don't allow
+    # infinite nesting, but one level of nesting for each field.
+    for _ in arguments:
+        options = [schema]
+        for field in fields:
+            options.append({'by-' + field: {basestring: schema}})
+        schema = voluptuous.Any(*options)
+    return schema
 
 
 def resolve_keyed_by(item, field, item_name, **extra_values):
@@ -50,7 +62,7 @@ def resolve_keyed_by(item, field, item_name, **extra_values):
     (modifying `item` directly).  The field is specified using dotted notation
     to traverse dictionaries.
 
-    For example, given item
+    For example, given item::
 
         job:
             test-platform: linux128
@@ -61,7 +73,7 @@ def resolve_keyed_by(item, field, item_name, **extra_values):
                     default: 12
 
     a call to `resolve_keyed_by(item, 'job.chunks', item['thing-name'])
-    would mutate item in-place to
+    would mutate item in-place to::
 
         job:
             chunks: 12
@@ -70,6 +82,17 @@ def resolve_keyed_by(item, field, item_name, **extra_values):
 
     If extra_values are supplied, they represent additional values available
     for reference from by-<field>.
+
+    Items can be nested as deeply as the schema will allow::
+
+        chunks:
+            by-test-platform:
+                win.*:
+                    by-project:
+                        ash: ..
+                        cedar: ..
+                linux: 13
+                default: 12
     """
     # find the field, returning the item unchanged if anything goes wrong
     container, subfield = item, field
@@ -84,33 +107,69 @@ def resolve_keyed_by(item, field, item_name, **extra_values):
     if subfield not in container:
         return item
     value = container[subfield]
-    if not isinstance(value, dict) or len(value) != 1 or not value.keys()[0].startswith('by-'):
-        return item
+    while True:
+        if not isinstance(value, dict) or len(value) != 1 or not value.keys()[0].startswith('by-'):
+            return item
 
-    keyed_by = value.keys()[0][3:]  # strip off 'by-' prefix
-    key = extra_values.get(keyed_by) if keyed_by in extra_values else item[keyed_by]
-    alternatives = value.values()[0]
+        keyed_by = value.keys()[0][3:]  # strip off 'by-' prefix
+        key = extra_values.get(keyed_by) if keyed_by in extra_values else item[keyed_by]
+        alternatives = value.values()[0]
 
-    # exact match
-    if key in alternatives:
-        container[subfield] = alternatives[key]
-        return item
+        matches = keymatch(alternatives, key)
+        if len(matches) > 1:
+            raise Exception(
+                "Multiple matching values for {} {!r} found while "
+                "determining item {} in {}".format(
+                    keyed_by, key, field, item_name))
+        elif matches:
+            value = container[subfield] = matches[0]
+            continue
 
-    # regular expression match
-    matches = [(k, v) for k, v in alternatives.iteritems() if re.match(k + '$', key)]
-    if len(matches) > 1:
         raise Exception(
-            "Multiple matching values for {} {!r} found while determining item {} in {}".format(
+            "No {} matching {!r} nor 'default' found while determining item {} in {}".format(
                 keyed_by, key, field, item_name))
-    elif matches:
-        container[subfield] = matches[0][1]
-        return item
 
-    # default
-    if 'default' in alternatives:
-        container[subfield] = alternatives['default']
-        return item
+# Schemas for YAML files should use dashed identifiers by default.  If there are
+# components of the schema for which there is a good reason to use another format,
+# they can be whitelisted here.
+WHITELISTED_SCHEMA_IDENTIFIERS = [
+    # upstream-artifacts are handed directly to scriptWorker, which expects interCaps
+    lambda path: "[u'upstream-artifacts']" in path,
+]
 
-    raise Exception(
-        "No {} matching {!r} nor 'default' found while determining item {} in {}".format(
-            keyed_by, key, field, item_name))
+
+def check_schema(schema):
+    identifier_re = re.compile('^[a-z][a-z0-9-]*$')
+
+    def whitelisted(path):
+        return any(f(path) for f in WHITELISTED_SCHEMA_IDENTIFIERS)
+
+    def iter(path, sch):
+        if isinstance(sch, collections.Mapping):
+            for k, v in sch.iteritems():
+                child = "{}[{!r}]".format(path, k)
+                if isinstance(k, (voluptuous.Optional, voluptuous.Required)):
+                    k = str(k)
+                if isinstance(k, basestring):
+                    if not identifier_re.match(k) and not whitelisted(child):
+                        raise RuntimeError(
+                            'YAML schemas should use dashed lower-case identifiers, '
+                            'not {!r} @ {}'.format(k, child))
+                iter(child, v)
+        elif isinstance(sch, (list, tuple)):
+            for i, v in enumerate(sch):
+                iter("{}[{}]".format(path, i), v)
+        elif isinstance(sch, voluptuous.Any):
+            for v in sch.validators:
+                iter(path, v)
+    iter('schema', schema.schema)
+
+
+def Schema(*args, **kwargs):
+    """
+    Operates identically to voluptuous.Schema, but applying some taskgraph-specific checks
+    in the process.
+    """
+    schema = voluptuous.Schema(*args, **kwargs)
+    check_schema(schema)
+    return schema

@@ -30,17 +30,14 @@ function log(msg) {
 
 function getPreviousAccountNameHash() {
   try {
-    return Services.prefs.getComplexValue(PREF_LAST_FXA_USER, Ci.nsISupportsString).data;
+    return Services.prefs.getStringPref(PREF_LAST_FXA_USER);
   } catch (_) {
     return "";
   }
 }
 
 function setPreviousAccountNameHash(acctName) {
-  let string = Cc["@mozilla.org/supports-string;1"]
-               .createInstance(Ci.nsISupportsString);
-  string.data = sha256(acctName);
-  Services.prefs.setComplexValue(PREF_LAST_FXA_USER, Ci.nsISupportsString, string);
+  Services.prefs.setStringPref(PREF_LAST_FXA_USER, sha256(acctName));
 }
 
 function needRelinkWarning(acctName) {
@@ -432,14 +429,9 @@ function migrateToDevEdition(urlParams) {
   try {
     defaultProfilePath = window.getDefaultProfilePath();
   } catch (e) {} // no default profile.
-  let migrateSyncCreds = false;
-  if (defaultProfilePath) {
-    try {
-      migrateSyncCreds = Services.prefs.getBoolPref("identity.fxaccounts.migrateToDevEdition");
-    } catch (e) {}
-  }
 
-  if (!migrateSyncCreds) {
+  if (!defaultProfilePath ||
+      !Services.prefs.getBoolPref("identity.fxaccounts.migrateToDevEdition", false)) {
     return Promise.resolve(false);
   }
 

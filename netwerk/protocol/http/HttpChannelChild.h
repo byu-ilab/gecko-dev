@@ -103,11 +103,12 @@ public:
   void AddIPDLReference();
   void ReleaseIPDLReference();
 
-  bool IsSuspended();
+  MOZ_MUST_USE bool IsSuspended();
 
   mozilla::ipc::IPCResult RecvNotifyTrackingProtectionDisabled() override;
   mozilla::ipc::IPCResult RecvNotifyTrackingResource() override;
   void FlushedForDiversion();
+  mozilla::ipc::IPCResult RecvSetClassifierMatchedInfo(const ClassifierInfo& aInfo) override;
 
 protected:
   mozilla::ipc::IPCResult RecvOnStartRequest(const nsresult& channelStatus,
@@ -123,11 +124,10 @@ protected:
                                              const NetAddr& peerAddr,
                                              const int16_t& redirectCount,
                                              const uint32_t& cacheKey,
-                                             const nsCString& altDataType) override;
+                                             const nsCString& altDataType,
+                                             const int64_t& altDataLen) override;
   mozilla::ipc::IPCResult RecvOnTransportAndData(const nsresult& channelStatus,
                                                  const nsresult& status,
-                                                 const uint64_t& progress,
-                                                 const uint64_t& progressMax,
                                                  const uint64_t& offset,
                                                  const uint32_t& count,
                                                  const nsCString& data) override;
@@ -155,9 +155,10 @@ protected:
   mozilla::ipc::IPCResult RecvIssueDeprecationWarning(const uint32_t& warning,
                                                       const bool& asError) override;
 
-  mozilla::ipc::IPCResult RecvSetPriority(const uint16_t& aPriority) override;
+  mozilla::ipc::IPCResult RecvSetPriority(const int16_t& aPriority) override;
 
-  bool GetAssociatedContentSecurity(nsIAssociatedContentSecurity** res = nullptr);
+  MOZ_MUST_USE bool
+  GetAssociatedContentSecurity(nsIAssociatedContentSecurity** res = nullptr);
   virtual void DoNotifyListenerCleanup() override;
 
   NS_IMETHOD GetResponseSynthesized(bool* aSynthesized) override;
@@ -188,7 +189,7 @@ private:
   // before the constructor message is sent to the parent.
   void SetEventTarget();
 
-  nsresult ContinueAsyncOpen();
+  MOZ_MUST_USE nsresult ContinueAsyncOpen();
 
   void DoOnStartRequest(nsIRequest* aRequest, nsISupports* aContext);
   void DoOnStatus(nsIRequest* aRequest, nsresult status);
@@ -303,14 +304,13 @@ private:
                       const NetAddr& selfAddr,
                       const NetAddr& peerAddr,
                       const uint32_t& cacheKey,
-                      const nsCString& altDataType);
+                      const nsCString& altDataType,
+                      const int64_t& altDataLen);
   void MaybeDivertOnData(const nsCString& data,
                          const uint64_t& offset,
                          const uint32_t& count);
   void OnTransportAndData(const nsresult& channelStatus,
                           const nsresult& status,
-                          const uint64_t progress,
-                          const uint64_t& progressMax,
                           const uint64_t& offset,
                           const uint32_t& count,
                           const nsCString& data);
@@ -331,10 +331,10 @@ private:
 
   // Create a a new channel to be used in a redirection, based on the provided
   // response headers.
-  nsresult SetupRedirect(nsIURI* uri,
-                         const nsHttpResponseHead* responseHead,
-                         const uint32_t& redirectFlags,
-                         nsIChannel** outChannel);
+  MOZ_MUST_USE nsresult SetupRedirect(nsIURI* uri,
+                                      const nsHttpResponseHead* responseHead,
+                                      const uint32_t& redirectFlags,
+                                      nsIChannel** outChannel);
 
   // Perform a redirection without communicating with the parent process at all.
   void BeginNonIPCRedirect(nsIURI* responseURI,

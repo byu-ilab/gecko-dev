@@ -14,7 +14,7 @@
 #include "gc/Marking.h"
 #include "js/Value.h"
 #include "vm/Debugger.h"
-#include "vm/TypedArrayCommon.h"
+#include "vm/TypedArrayObject.h"
 
 #include "jsobjinlines.h"
 
@@ -268,8 +268,8 @@ js::NativeObject::numFixedSlotsForCompilation() const
 {
     // This is an alternative method for getting the number of fixed slots in an
     // object. It requires more logic and memory accesses than numFixedSlots()
-    // but is safe to be called from the compilation thread, even if the main
-    // thread is actively mutating the VM.
+    // but is safe to be called from the compilation thread, even if the active
+    // thread is mutating the VM.
 
     // The compiler does not have access to nursery things.
     MOZ_ASSERT(!IsInsideNursery(this));
@@ -470,6 +470,9 @@ NativeObject::growSlots(JSContext* cx, uint32_t oldCount, uint32_t newCount)
 /* static */ bool
 NativeObject::growSlotsDontReportOOM(JSContext* cx, NativeObject* obj, uint32_t newCount)
 {
+    // IC code calls this directly.
+    AutoCheckCannotGC nogc;
+
     if (!obj->growSlots(cx, obj->numDynamicSlots(), newCount)) {
         cx->recoverFromOutOfMemory();
         return false;
@@ -477,13 +480,39 @@ NativeObject::growSlotsDontReportOOM(JSContext* cx, NativeObject* obj, uint32_t 
     return true;
 }
 
+/* static */ bool
+NativeObject::addDenseElementDontReportOOM(JSContext* cx, NativeObject* obj)
+{
+    // IC code calls this directly.
+    AutoCheckCannotGC nogc;
+
+    MOZ_ASSERT(obj->getDenseInitializedLength() == obj->getDenseCapacity());
+    MOZ_ASSERT(!obj->denseElementsAreCopyOnWrite());
+    MOZ_ASSERT(!obj->denseElementsAreFrozen());
+    MOZ_ASSERT(!obj->isIndexed());
+    MOZ_ASSERT(!obj->is<TypedArrayObject>());
+    MOZ_ASSERT_IF(obj->is<ArrayObject>(), obj->as<ArrayObject>().lengthIsWritable());
+
+    // growElements will report OOM also if the number of dense elements will
+    // exceed MAX_DENSE_ELEMENTS_COUNT. See goodElementsAllocationAmount.
+    uint32_t oldCapacity = obj->getDenseCapacity();
+    if (MOZ_UNLIKELY(!obj->growElements(cx, oldCapacity + 1))) {
+        cx->recoverFromOutOfMemory();
+        return false;
+    }
+
+    MOZ_ASSERT(obj->getDenseCapacity() > oldCapacity);
+    MOZ_ASSERT(obj->getDenseCapacity() <= MAX_DENSE_ELEMENTS_COUNT);
+    return true;
+}
+
 static void
 FreeSlots(JSContext* cx, HeapSlot* slots)
 {
-    // Note: off thread parse tasks do not have access to GGC nursery allocated things.
-    if (!cx->helperThread())
-        return cx->nursery().freeBuffer(slots);
-    js_free(slots);
+    if (cx->helperThread())
+        js_free(slots);
+    else
+        cx->nursery().freeBuffer(slots);
 }
 
 void
@@ -1142,7 +1171,7 @@ PurgeProtoChain(JSContext* cx, JSObject* objArg, HandleId id)
 
         shape = obj->as<NativeObject>().lookup(cx, id);
         if (shape)
-            return obj->as<NativeObject>().shadowingShapeChange(cx, *shape);
+            return NativeObject::shadowingShapeChange(cx, obj.as<NativeObject>(), *shape);
 
         obj = obj->staticPrototype();
     }
@@ -1653,7 +1682,7 @@ js::NativeDefineProperty(JSContext* cx, HandleNativeObject obj, HandleId id,
     if (!NativeDefineProperty(cx, obj, id, value, getter, setter, attrs, result))
         return false;
     if (!result) {
-        // Off-main-thread callers should not get here: they must call this
+        // Off-thread callers should not get here: they must call this
         // function only with known-valid arguments. Populating a new
         // PlainObject with configurable properties is fine.
         MOZ_ASSERT(!cx->helperThread());
@@ -2017,7 +2046,8 @@ static inline bool
 GeneralizedGetProperty(JSContext* cx, HandleObject obj, HandleId id, HandleValue receiver,
                        IsNameLookup nameLookup, MutableHandleValue vp)
 {
-    JS_CHECK_RECURSION(cx, return false);
+    if (!CheckRecursionLimit(cx))
+        return false;
     if (nameLookup) {
         // When nameLookup is true, GetProperty implements ES6 rev 34 (2015 Feb
         // 20) 8.1.1.2.6 GetBindingValue, with step 3 (the call to HasProperty)
@@ -2042,7 +2072,8 @@ static inline bool
 GeneralizedGetProperty(JSContext* cx, JSObject* obj, jsid id, const Value& receiver,
                        IsNameLookup nameLookup, FakeMutableHandle<Value> vp)
 {
-    JS_CHECK_RECURSION_DONT_REPORT(cx, return false);
+    if (!CheckRecursionLimitDontReport(cx))
+        return false;
     if (nameLookup)
         return false;
     return GetPropertyNoGC(cx, obj, receiver, id, vp.address());
@@ -2122,12 +2153,24 @@ js::NativeGetPropertyNoGC(JSContext* cx, NativeObject* obj, const Value& receive
 }
 
 bool
-js::GetPropertyForNameLookup(JSContext* cx, HandleObject obj, HandleId id, MutableHandleValue vp)
+js::GetNameBoundInEnvironment(JSContext* cx, HandleObject envArg, HandleId id, MutableHandleValue vp)
 {
-    RootedValue receiver(cx, ObjectValue(*obj));
-    if (obj->getOpsGetProperty())
-        return GeneralizedGetProperty(cx, obj, id, receiver, NameLookup, vp);
-    return NativeGetPropertyInline<CanGC>(cx, obj.as<NativeObject>(), receiver, id, NameLookup, vp);
+    // Manually unwrap 'with' environments to prevent looking up @@unscopables
+    // twice.
+    //
+    // This is unfortunate because internally, the engine does not distinguish
+    // HasProperty from HasBinding: both are implemented as a HasPropertyOp
+    // hook on a WithEnvironmentObject.
+    //
+    // In the case of attempting to get the value of a binding already looked
+    // up via BINDNAME, calling HasProperty on the WithEnvironmentObject is
+    // equivalent to calling HasBinding a second time. This results in the
+    // incorrect behavior of performing the @@unscopables check again.
+    RootedObject env(cx, MaybeUnwrapWithEnvironment(envArg));
+    RootedValue receiver(cx, ObjectValue(*env));
+    if (env->getOpsGetProperty())
+        return GeneralizedGetProperty(cx, env, id, receiver, NameLookup, vp);
+    return NativeGetPropertyInline<CanGC>(cx, env.as<NativeObject>(), receiver, id, NameLookup, vp);
 }
 
 

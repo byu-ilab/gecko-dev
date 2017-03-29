@@ -141,11 +141,7 @@ public:
 
   nsresult Cancel() override
   {
-    // Since nsTimerImpl is not thread-safe, we should release |mTimer|
-    // here in the target thread to avoid race condition. Otherwise,
-    // ~nsTimerEvent() which calls nsTimerImpl::Release() could run in the
-    // timer thread and result in race condition.
-    mTimer = nullptr;
+    mTimer->Cancel();
     return NS_OK;
   }
 
@@ -282,15 +278,6 @@ nsTimerEvent::GetName(nsACString& aName)
 NS_IMETHODIMP
 nsTimerEvent::Run()
 {
-  if (!mTimer) {
-    MOZ_ASSERT(false);
-    return NS_OK;
-  }
-
-  if (mGeneration != mTimer->GetGeneration()) {
-    return NS_OK;
-  }
-
   if (MOZ_LOG_TEST(GetTimerLog(), LogLevel::Debug)) {
     TimeStamp now = TimeStamp::Now();
     MOZ_LOG(GetTimerLog(), LogLevel::Debug,
@@ -298,11 +285,9 @@ nsTimerEvent::Run()
             this, (now - mInitTime).ToMilliseconds()));
   }
 
-  mTimer->Fire();
+  mTimer->Fire(mGeneration);
 
-  // We call Cancel() to correctly release mTimer.
-  // Read more in the Cancel() implementation.
-  return Cancel();
+  return NS_OK;
 }
 
 nsresult
@@ -378,7 +363,7 @@ TimerThread::Shutdown()
     }
 
     // Need to copy content of mTimers array to a local array
-    // because call to timers' ReleaseCallback() (and release its self)
+    // because call to timers' Cancel() (and release its self)
     // must not be done under the lock. Destructor of a callback
     // might potentially call some code reentering the same lock
     // that leads to unexpected behavior or deadlock.
@@ -390,7 +375,7 @@ TimerThread::Shutdown()
   uint32_t timersCount = timers.Length();
   for (uint32_t i = 0; i < timersCount; i++) {
     nsTimerImpl* timer = timers[i];
-    timer->ReleaseCallback();
+    timer->Cancel();
     ReleaseTimerInternal(timer);
   }
 
@@ -603,7 +588,7 @@ TimerThread::AddTimer(nsTimerImpl* aTimer)
 }
 
 nsresult
-TimerThread::RemoveTimer(nsTimerImpl* aTimer, bool aDisable)
+TimerThread::RemoveTimer(nsTimerImpl* aTimer)
 {
   MonitorAutoLock lock(mMonitor);
 
@@ -612,10 +597,6 @@ TimerThread::RemoveTimer(nsTimerImpl* aTimer, bool aDisable)
 
   if (!RemoveTimerInternal(aTimer)) {
     return NS_ERROR_NOT_AVAILABLE;
-  }
-
-  if (aDisable) {
-    aTimer->mEventTarget = nullptr;
   }
 
   // Awaken the timer thread.

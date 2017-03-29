@@ -439,7 +439,8 @@ WidgetEvent::IsAllowedToDispatchDOMEvent() const
       return wheelEvent->mDeltaX != 0.0 || wheelEvent->mDeltaY != 0.0 ||
              wheelEvent->mDeltaZ != 0.0;
     }
-
+    case eTouchEventClass:
+      return mMessage != eTouchPointerCancel;
     // Following events are handled in EventStateManager, so, we don't need to
     // dispatch DOM event for them into the DOM tree.
     case eQueryContentEventClass:
@@ -895,12 +896,12 @@ WidgetKeyboardEvent::ComputeLocationFromCodeValue(CodeNameIndex aCodeNameIndex)
     case CODE_NAME_INDEX_ControlLeft:
     case CODE_NAME_INDEX_OSLeft:
     case CODE_NAME_INDEX_ShiftLeft:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_LEFT;
+      return eKeyLocationLeft;
     case CODE_NAME_INDEX_AltRight:
     case CODE_NAME_INDEX_ControlRight:
     case CODE_NAME_INDEX_OSRight:
     case CODE_NAME_INDEX_ShiftRight:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_RIGHT;
+      return eKeyLocationRight;
     case CODE_NAME_INDEX_Numpad0:
     case CODE_NAME_INDEX_Numpad1:
     case CODE_NAME_INDEX_Numpad2:
@@ -929,9 +930,9 @@ WidgetKeyboardEvent::ComputeLocationFromCodeValue(CodeNameIndex aCodeNameIndex)
     case CODE_NAME_INDEX_NumpadParenLeft:
     case CODE_NAME_INDEX_NumpadParenRight:
     case CODE_NAME_INDEX_NumpadSubtract:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_NUMPAD;
+      return eKeyLocationNumpad;
     default:
-      return nsIDOMKeyEvent::DOM_KEY_LOCATION_STANDARD;
+      return eKeyLocationStandard;
   }
 }
 

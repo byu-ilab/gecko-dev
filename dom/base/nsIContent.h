@@ -26,7 +26,6 @@ namespace mozilla {
 class EventChainPreVisitor;
 namespace dom {
 class ShadowRoot;
-struct CustomElementData;
 } // namespace dom
 namespace widget {
 struct IMEState;
@@ -194,7 +193,7 @@ public:
   void SetIsNativeAnonymousRoot()
   {
     SetFlags(NODE_IS_ANONYMOUS_ROOT | NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE |
-             NODE_IS_NATIVE_ANONYMOUS_ROOT);
+             NODE_IS_NATIVE_ANONYMOUS_ROOT | NODE_IS_NATIVE_ANONYMOUS);
   }
 
   /**
@@ -560,6 +559,11 @@ public:
   virtual bool TextIsOnlyWhitespace() = 0;
 
   /**
+   * Thread-safe version of TextIsOnlyWhitespace.
+   */
+  virtual bool ThreadSafeTextIsOnlyWhitespace() const = 0;
+
+  /**
    * Method to see if the text node contains data that is useful
    * for a translation: i.e., it consists of more than just whitespace,
    * digits and punctuation.
@@ -736,22 +740,6 @@ public:
   nsINode* GetFlattenedTreeParentNodeInternal(FlattenedParentType aType) const;
 
   /**
-   * Gets the custom element data used by web components custom element.
-   * Custom element data is created at the first attempt to enqueue a callback.
-   *
-   * @return The custom element data or null if none.
-   */
-  virtual mozilla::dom::CustomElementData *GetCustomElementData() const = 0;
-
-  /**
-   * Sets the custom element data, ownership of the
-   * callback data is taken by this content.
-   *
-   * @param aCallbackData The custom element data.
-   */
-  virtual void SetCustomElementData(mozilla::dom::CustomElementData* aData) = 0;
-
-  /**
    * API to check if this is a link that's traversed in response to user input
    * (e.g. a click event). Specializations for HTML/SVG/generic XML allow for
    * different types of link in different types of content.
@@ -868,18 +856,6 @@ public:
   }
 
   /**
-   * Get the class list of this content node (this corresponds to the
-   * value of the class attribute).  This may be null if there are no
-   * classes, but that's not guaranteed.
-   */
-  const nsAttrValue* GetClasses() const {
-    if (HasFlag(NODE_MAY_HAVE_CLASS)) {
-      return DoGetClasses();
-    }
-    return nullptr;
-  }
-
-  /**
    * Walk aRuleWalker over the content style rules (presentational
    * hint rules) for this content node.
    */
@@ -971,8 +947,19 @@ public:
     return false;
   }
 
+  // Returns true if this element is native-anonymous scrollbar content.
+  bool IsNativeScrollbarContent() const {
+    return IsNativeAnonymous() &&
+           IsAnyOfXULElements(nsGkAtoms::scrollbar,
+                              nsGkAtoms::resizer,
+                              nsGkAtoms::scrollcorner);
+  }
+
   // Overloaded from nsINode
   virtual already_AddRefed<nsIURI> GetBaseURI(bool aTryUseXHRDocBaseURI = false) const override;
+
+  // Returns base URI for style attribute.
+  already_AddRefed<nsIURI> GetBaseURIForStyleAttr() const;
 
   virtual nsresult GetEventTargetParent(
                      mozilla::EventChainPreVisitor& aVisitor) override;
@@ -987,13 +974,6 @@ protected:
    * called if HasID() is true.
    */
   nsIAtom* DoGetID() const;
-
-private:
-  /**
-   * Hook for implementing GetClasses.  This is guaranteed to only be
-   * called if the NODE_MAY_HAVE_CLASS flag is set.
-   */
-  const nsAttrValue* DoGetClasses() const;
 
 public:
 #ifdef DEBUG
@@ -1048,7 +1028,15 @@ inline nsIContent* nsINode::AsContent()
   {                                                                            \
     return aContent->_check ? static_cast<_class*>(aContent) : nullptr;        \
   }                                                                            \
+  static const _class* FromContent(const nsIContent* aContent)                 \
+  {                                                                            \
+    return aContent->_check ? static_cast<const _class*>(aContent) : nullptr;  \
+  }                                                                            \
   static _class* FromContentOrNull(nsIContent* aContent)                       \
+  {                                                                            \
+    return aContent ? FromContent(aContent) : nullptr;                         \
+  }                                                                            \
+  static const _class* FromContentOrNull(const nsIContent* aContent)           \
   {                                                                            \
     return aContent ? FromContent(aContent) : nullptr;                         \
   }

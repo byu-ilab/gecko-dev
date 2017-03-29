@@ -23,6 +23,7 @@
 #include "mozilla/dom/network/TCPServerSocketChild.h"
 #include "mozilla/dom/network/UDPSocketChild.h"
 #include "mozilla/net/AltDataOutputStreamChild.h"
+#include "mozilla/net/StunAddrsRequestChild.h"
 
 #ifdef NECKO_PROTOCOL_rtsp
 #include "mozilla/net/RtspControllerChild.h"
@@ -86,6 +87,23 @@ NeckoChild::DeallocPHttpChannelChild(PHttpChannelChild* channel)
 
   HttpChannelChild* child = static_cast<HttpChannelChild*>(channel);
   child->ReleaseIPDLReference();
+  return true;
+}
+
+PStunAddrsRequestChild*
+NeckoChild::AllocPStunAddrsRequestChild()
+{
+  // We don't allocate here: instead we always use IPDL constructor that takes
+  // an existing object
+  NS_NOTREACHED("AllocPStunAddrsRequestChild should not be called on child");
+  return nullptr;
+}
+
+bool
+NeckoChild::DeallocPStunAddrsRequestChild(PStunAddrsRequestChild* aActor)
+{
+  StunAddrsRequestChild* p = static_cast<StunAddrsRequestChild*>(aActor);
+  p->ReleaseIPDLReference();
   return true;
 }
 
@@ -298,6 +316,7 @@ NeckoChild::DeallocPUDPSocketChild(PUDPSocketChild* child)
 
 PDNSRequestChild*
 NeckoChild::AllocPDNSRequestChild(const nsCString& aHost,
+                                  const OriginAttributes& aOriginAttributes,
                                   const uint32_t& aFlags,
                                   const nsCString& aNetworkInterface)
 {

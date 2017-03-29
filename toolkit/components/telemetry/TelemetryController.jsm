@@ -84,6 +84,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "TelemetrySend",
                                   "resource://gre/modules/TelemetrySend.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "TelemetryReportingPolicy",
                                   "resource://gre/modules/TelemetryReportingPolicy.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "TelemetryModules",
+                                  "resource://gre/modules/TelemetryModules.jsm");
 
 /**
  * Setup Telemetry logging. This function also gets called when loggin related
@@ -197,6 +199,8 @@ this.TelemetryController = Object.freeze({
    * @param {Boolean} [aOptions.addEnvironment=false] true if the ping should contain the
    *                  environment data.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    * @returns {Promise} Test-only - a promise that resolves with the ping id once the ping is stored or sent.
    */
   submitExternalPing(aType, aPayload, aOptions = {}) {
@@ -229,6 +233,8 @@ this.TelemetryController = Object.freeze({
    * @param {Boolean} [aOptions.overwrite=false] true overwrites a ping with the same name,
    *                  if found.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    *
    * @returns {Promise} A promise that resolves with the ping id when the ping is saved to
    *                    disk.
@@ -286,6 +292,8 @@ this.TelemetryController = Object.freeze({
    * @param {Boolean} [aOptions.overwrite=false] true overwrites a ping with the same name,
    *                  if found.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    *
    * @returns {Promise} A promise that resolves with the ping id when the ping is saved to
    *                    disk.
@@ -395,6 +403,8 @@ var Impl = {
    * @param {Boolean} aOptions.addEnvironment true if the ping should contain the
    *                  environment data.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    *
    * @returns {Object} An object that contains the assembled ping data.
    */
@@ -409,7 +419,7 @@ var Impl = {
     // Fill the common ping fields.
     let pingData = {
       type: aType,
-      id: Policy.generatePingId(),
+      id: aOptions.overridePingId || Policy.generatePingId(),
       creationDate: (Policy.now()).toISOString(),
       version: PING_FORMAT_VERSION,
       application: this._getApplicationSection(),
@@ -451,6 +461,8 @@ var Impl = {
    * @param {Boolean} [aOptions.addEnvironment=false] true if the ping should contain the
    *                  environment data.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    * @returns {Promise} Test-only - a promise that is resolved with the ping id once the ping is stored or sent.
    */
   _submitPingLogic: Task.async(function* (aType, aPayload, aOptions) {
@@ -489,6 +501,8 @@ var Impl = {
    * @param {Boolean} [aOptions.addEnvironment=false] true if the ping should contain the
    *                  environment data.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    * @returns {Promise} Test-only - a promise that is resolved with the ping id once the ping is stored or sent.
    */
   submitExternalPing: function send(aType, aPayload, aOptions) {
@@ -534,6 +548,8 @@ var Impl = {
    *                  environment data.
    * @param {Boolean} aOptions.overwrite true overwrites a ping with the same name, if found.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    *
    * @returns {Promise} A promise that resolves with the ping id when the ping is saved to
    *                    disk.
@@ -570,6 +586,8 @@ var Impl = {
    *                  environment data.
    * @param {Boolean} aOptions.overwrite true overwrites a ping with the same name, if found.
    * @param {Object}  [aOptions.overrideEnvironment=null] set to override the environment data.
+   * @param {String} [aOptions.overridePingId=null] set to override the
+   *                 generated ping id.
    *
    * @returns {Promise} A promise that resolves with the ping id when the ping is saved to
    *                    disk.
@@ -733,6 +751,9 @@ var Impl = {
         // the profile directory. This is a temporary measure that we should drop
         // in the future.
         TelemetryStorage.removeFHRDatabase();
+
+        // Report the modules loaded in the Firefox process.
+        TelemetryModules.start();
 
         this._delayedInitTaskDeferred.resolve();
       } catch (e) {

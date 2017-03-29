@@ -19,7 +19,6 @@
 #include "js/Debug.h"
 #include "vm/EnvironmentObject.h"
 #include "vm/GeneratorObject.h"
-#include "wasm/WasmDebugFrame.h"
 #include "wasm/WasmInstance.h"
 
 #include "jsobjinlines.h"
@@ -337,7 +336,7 @@ InterpreterStack::resumeGeneratorCallFrame(JSContext* cx, InterpreterRegs& regs,
                                            HandleFunction callee, HandleValue newTarget,
                                            HandleObject envChain)
 {
-    MOZ_ASSERT(callee->isGenerator());
+    MOZ_ASSERT(callee->isStarGenerator() || callee->isLegacyGenerator() || callee->isAsync());
     RootedScript script(cx, JSFunction::getOrCreateScript(cx, callee));
     InterpreterFrame* prev = regs.fp();
     jsbytecode* prevpc = regs.pc;
@@ -423,7 +422,7 @@ AbstractFramePtr::returnValue() const
     if (isInterpreterFrame())
         return asInterpreterFrame()->returnValue();
     if (isWasmDebugFrame())
-        return UndefinedHandleValue;
+        return asWasmDebugFrame()->returnValue();
     return asBaselineFrame()->returnValue();
 }
 
@@ -455,7 +454,7 @@ AbstractFramePtr::environmentChain() const
     if (isBaselineFrame())
         return asBaselineFrame()->environmentChain();
     if (isWasmDebugFrame())
-        return asWasmDebugFrame()->environmentChain();
+        return &global()->lexicalEnvironment();
     return asRematerializedFrame()->environmentChain();
 }
 

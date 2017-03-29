@@ -52,6 +52,7 @@ var DEFAULT_PREFERENCES =
   "enhanceTextSelection": false,
   "renderer": "canvas",
   "renderInteractiveForms": false,
+  "enablePrintAutoRotate": false,
   "disablePageLabels": false
 }
 
@@ -289,10 +290,7 @@ var PdfjsChromeUtils = {
 
   _setStringPref(aPrefName, aPrefValue) {
     this._ensurePreferenceAllowed(aPrefName);
-    let str = Cc["@mozilla.org/supports-string;1"]
-                .createInstance(Ci.nsISupportsString);
-    str.data = aPrefValue;
-    Services.prefs.setComplexValue(aPrefName, Ci.nsISupportsString, str);
+    Services.prefs.setStringPref(aPrefName, aPrefValue);
   },
 
   /*

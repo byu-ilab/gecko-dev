@@ -112,16 +112,24 @@ class OutputStreamManager;
 class TaskQueue;
 
 extern LazyLogModule gMediaDecoderLog;
-extern LazyLogModule gMediaSampleLog;
 
-enum class MediaEventType : int8_t {
+enum class MediaEventType : int8_t
+{
   PlaybackStarted,
   PlaybackStopped,
   PlaybackEnded,
   SeekStarted,
   Invalidate,
   EnterVideoSuspend,
-  ExitVideoSuspend
+  ExitVideoSuspend,
+  StartVideoSuspendTimer,
+  CancelVideoSuspendTimer
+};
+
+enum class VideoDecodeMode : uint8_t
+{
+  Normal,
+  Suspend
 };
 
 /*
@@ -150,7 +158,8 @@ public:
   nsresult Init(MediaDecoder* aDecoder);
 
   // Enumeration for the valid decoding states
-  enum State {
+  enum State
+  {
     DECODER_STATE_DECODING_METADATA,
     DECODER_STATE_WAIT_FOR_CDM,
     DECODER_STATE_DORMANT,
@@ -221,6 +230,9 @@ public:
   size_t SizeOfVideoQueue() const;
 
   size_t SizeOfAudioQueue() const;
+
+  // Sets the video decode mode. Used by the suspend-video-decoder feature.
+  void SetVideoDecodeMode(VideoDecodeMode aMode);
 
 private:
   class StateObject;
@@ -295,10 +307,15 @@ private:
   // be held.
   bool IsPlaying() const;
 
+  // Sets mMediaSeekable to false.
+  void SetMediaNotSeekable();
+
   // Resets all states related to decoding and aborts all pending requests
   // to the decoders.
   void ResetDecode(TrackSet aTracks = TrackSet(TrackInfo::kAudioTrack,
                                                TrackInfo::kVideoTrack));
+
+  void SetVideoDecodeModeInternal(VideoDecodeMode aMode);
 
 protected:
   virtual ~MediaDecoderStateMachine();
@@ -307,13 +324,13 @@ protected:
 
   void ReaderSuspendedChanged();
 
-  // Inserts MediaData* samples into their respective MediaQueues.
+  // Inserts a sample into the Audio/Video queue.
   // aSample must not be null.
-  void PushAudio(MediaData* aSample);
-  void PushVideo(MediaData* aSample);
+  void PushAudio(AudioData* aSample);
+  void PushVideo(VideoData* aSample);
 
-  void OnAudioPopped(const RefPtr<MediaData>& aSample);
-  void OnVideoPopped(const RefPtr<MediaData>& aSample);
+  void OnAudioPopped(const RefPtr<AudioData>& aSample);
+  void OnVideoPopped(const RefPtr<VideoData>& aSample);
 
   void AudioAudibleChanged(bool aAudible);
 
@@ -321,8 +338,8 @@ protected:
   void SetPlaybackRate(double aPlaybackRate);
   void PreservesPitchChanged();
 
-  MediaQueue<MediaData>& AudioQueue() { return mAudioQueue; }
-  MediaQueue<MediaData>& VideoQueue() { return mVideoQueue; }
+  MediaQueue<AudioData>& AudioQueue() { return mAudioQueue; }
+  MediaQueue<VideoData>& VideoQueue() { return mVideoQueue; }
 
   // True if we are low in decoded audio/video data.
   // May not be invoked when mReader->UseBufferingHeuristics() is false.
@@ -430,7 +447,8 @@ protected:
   // [mStartTime, mEndTime], and mStartTime will not be 0 if the media does
   // not start at 0. Note this is different than the "current playback position",
   // which is in the range [0,duration].
-  int64_t GetMediaTime() const {
+  int64_t GetMediaTime() const
+  {
     MOZ_ASSERT(OnTaskQueue());
     return mCurrentPosition;
   }
@@ -487,14 +505,18 @@ private:
 
   // Queue of audio frames. This queue is threadsafe, and is accessed from
   // the audio, decoder, state machine, and main threads.
-  MediaQueue<MediaData> mAudioQueue;
+  MediaQueue<AudioData> mAudioQueue;
   // Queue of video frames. This queue is threadsafe, and is accessed from
   // the decoder, state machine, and main threads.
-  MediaQueue<MediaData> mVideoQueue;
+  MediaQueue<VideoData> mVideoQueue;
 
   UniquePtr<StateObject> mStateObj;
 
-  media::TimeUnit Duration() const { MOZ_ASSERT(OnTaskQueue()); return mDuration.Ref().ref(); }
+  media::TimeUnit Duration() const
+  {
+    MOZ_ASSERT(OnTaskQueue());
+    return mDuration.Ref().ref();
+  }
 
   // Recomputes the canonical duration from various sources.
   void RecomputeDuration();
@@ -515,8 +537,8 @@ private:
   bool IsLogicallyPlaying()
   {
     MOZ_ASSERT(OnTaskQueue());
-    return mPlayState == MediaDecoder::PLAY_STATE_PLAYING ||
-           mNextPlayState == MediaDecoder::PLAY_STATE_PLAYING;
+    return mPlayState == MediaDecoder::PLAY_STATE_PLAYING
+           || mNextPlayState == MediaDecoder::PLAY_STATE_PLAYING;
   }
 
   // Media Fragment end time in microseconds. Access controlled by decoder monitor.
@@ -590,10 +612,11 @@ private:
 
   // Only one of a given pair of ({Audio,Video}DataPromise, WaitForDataPromise)
   // should exist at any given moment.
-  using MediaDataPromise = MediaDecoderReader::MediaDataPromise;
+  using AudioDataPromise = MediaDecoderReader::AudioDataPromise;
+  using VideoDataPromise = MediaDecoderReader::VideoDataPromise;
   using WaitForDataPromise = MediaDecoderReader::WaitForDataPromise;
-  MozPromiseRequestHolder<MediaDataPromise> mAudioDataRequest;
-  MozPromiseRequestHolder<MediaDataPromise> mVideoDataRequest;
+  MozPromiseRequestHolder<AudioDataPromise> mAudioDataRequest;
+  MozPromiseRequestHolder<VideoDataPromise> mVideoDataRequest;
   MozPromiseRequestHolder<WaitForDataPromise> mAudioWaitRequest;
   MozPromiseRequestHolder<WaitForDataPromise> mVideoWaitRequest;
 
@@ -601,7 +624,7 @@ private:
   const char* VideoRequestStatus() const;
 
   void OnSuspendTimerResolved();
-  void OnSuspendTimerRejected();
+  void CancelSuspendTimer();
 
   // True if we shouldn't play our audio (but still write it to any capturing
   // streams). When this is true, the audio thread will never start again after
@@ -661,6 +684,9 @@ private:
   // Media data resource from the decoder.
   RefPtr<MediaResource> mResource;
 
+  // Track the current video decode mode.
+  VideoDecodeMode mVideoDecodeMode;
+
   // Track the complete & error for audio/video separately
   MozPromiseRequestHolder<GenericPromise> mMediaSinkAudioPromise;
   MozPromiseRequestHolder<GenericPromise> mMediaSinkVideoPromise;
@@ -685,6 +711,8 @@ private:
   void OnCDMProxyNotReady();
   RefPtr<CDMProxy> mCDMProxy;
   MozPromiseRequestHolder<MediaDecoder::CDMProxyPromise> mCDMProxyPromise;
+
+  const bool mIsMSE;
 
 private:
   // The buffered range. Mirrored from the decoder thread.
@@ -723,8 +751,6 @@ private:
   // Current decoding position in the stream.
   Mirror<int64_t> mDecoderPosition;
 
-  // IsVisible, mirrored from the media decoder.
-  Mirror<bool> mIsVisible;
 
   // Duration of the media. This is guaranteed to be non-null after we finish
   // decoding the first frame.
@@ -751,22 +777,25 @@ private:
 public:
   AbstractCanonical<media::TimeIntervals>* CanonicalBuffered() const;
 
-  AbstractCanonical<media::NullableTimeUnit>* CanonicalDuration() {
+  AbstractCanonical<media::NullableTimeUnit>* CanonicalDuration()
+  {
     return &mDuration;
   }
-  AbstractCanonical<bool>* CanonicalIsShutdown() {
-    return &mIsShutdown;
-  }
-  AbstractCanonical<NextFrameStatus>* CanonicalNextFrameStatus() {
+  AbstractCanonical<bool>* CanonicalIsShutdown() { return &mIsShutdown; }
+  AbstractCanonical<NextFrameStatus>* CanonicalNextFrameStatus()
+  {
     return &mNextFrameStatus;
   }
-  AbstractCanonical<int64_t>* CanonicalCurrentPosition() {
+  AbstractCanonical<int64_t>* CanonicalCurrentPosition()
+  {
     return &mCurrentPosition;
   }
-  AbstractCanonical<int64_t>* CanonicalPlaybackOffset() {
+  AbstractCanonical<int64_t>* CanonicalPlaybackOffset()
+  {
     return &mPlaybackOffset;
   }
-  AbstractCanonical<bool>* CanonicalIsAudioDataAudible() {
+  AbstractCanonical<bool>* CanonicalIsAudioDataAudible()
+  {
     return &mIsAudioDataAudible;
   }
 };

@@ -1130,28 +1130,9 @@ static const JSFunctionSpec number_static_methods[] = {
 };
 
 
-/*
- * Set the exception mask to mask all exceptions and set the FPU precision
- * to 53 bit mantissa (64 bit doubles).
- */
-void
-js::FIX_FPU()
-{
-#if (defined __GNUC__ && defined __i386__) || \
-    (defined __SUNPRO_CC && defined __i386)
-    short control;
-    asm("fstcw %0" : "=m" (control) : );
-    control &= ~0x300; // Lower bits 8 and 9 (precision control).
-    control |= 0x2f3;  // Raise bits 0-5 (exception masks) and 9 (64-bit precision).
-    asm("fldcw %0" : : "m" (control) );
-#endif
-}
-
 bool
 js::InitRuntimeNumberState(JSRuntime* rt)
 {
-    FIX_FPU();
-
     // XXX If EXPOSE_INTL_API becomes true all the time at some point,
     //     js::InitRuntimeNumberState is no longer fallible, and we should
     //     change its return type.
@@ -1222,9 +1203,6 @@ JSObject*
 js::InitNumberClass(JSContext* cx, HandleObject obj)
 {
     MOZ_ASSERT(obj->isNative());
-
-    /* XXX must do at least once per new thread, so do it per JSContext... */
-    FIX_FPU();
 
     Handle<GlobalObject*> global = obj.as<GlobalObject>();
 
@@ -1789,36 +1767,6 @@ js::ToUint16Slow(JSContext* cx, const HandleValue v, uint16_t* out)
     if (d < 0)
         d += m;
     *out = (uint16_t) d;
-    return true;
-}
-
-bool
-js::ToLengthClamped(JSContext* cx, HandleValue v, uint32_t* out, bool* overflow)
-{
-    if (v.isInt32()) {
-        int32_t i = v.toInt32();
-        *out = i < 0 ? 0 : i;
-        return true;
-    }
-    double d;
-    if (v.isDouble()) {
-        d = v.toDouble();
-    } else {
-        if (!ToNumber(cx, v, &d)) {
-            *overflow = false;
-            return false;
-        }
-    }
-    d = JS::ToInteger(d);
-    if (d <= 0.0) {
-        *out = 0;
-        return true;
-    }
-    if (d >= (double)0xFFFFFFFEU) {
-        *overflow = true;
-        return false;
-    }
-    *out = (uint32_t)d;
     return true;
 }
 

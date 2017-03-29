@@ -491,9 +491,12 @@ description > html|a {
   margin-inline-end: 14px !important;
 }
 
+#verifiedManage:visited {
+  color: var(--in-content-link-color);
+}
+
 .fxaSyncIllustration {
   width: 231px;
-  list-style-image: url(chrome://browser/skin/fxa/sync-illustration.png)
 }
 
 #fxaLoginStatus[hasName] #fxaEmailAddress1 {
@@ -556,9 +559,6 @@ description > html|a {
   }
   .iOSLink {
     background-image: url("chrome://browser/skin/fxa/ios@2x.png");
-  }
-  .fxaSyncIllustration {
-    list-style-image: url(chrome://browser/skin/fxa/sync-illustration@2x.png)
   }
   .fxaFirefoxLogo {
     list-style-image: url(chrome://browser/skin/fxa/logo@2x.png);

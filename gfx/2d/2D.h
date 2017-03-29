@@ -19,6 +19,7 @@
 // without having a dependency on that type. This is used for DrawTargetSkia
 // to be able to hold on to a GLContext.
 #include "mozilla/GenericRefCounted.h"
+#include "mozilla/MemoryReporting.h"
 
 // This RefPtr class isn't ideal for usage in Azure, as it doesn't allow T**
 // outparams using the &-operator. But it will have to do as there's no easy
@@ -30,8 +31,6 @@
 #ifdef MOZ_ENABLE_FREETYPE
 #include <string>
 #endif
-
-#include "gfxPrefs.h"
 
 struct _cairo_surface;
 typedef _cairo_surface cairo_surface_t;
@@ -719,13 +718,7 @@ public:
   typedef void (*FontDescriptorOutput)(const uint8_t* aData, uint32_t aLength, Float aFontSize, void* aBaton);
 
   virtual FontType GetType() const = 0;
-  virtual AntialiasMode GetDefaultAAMode() {
-    if (gfxPrefs::DisableAllTextAA()) {
-      return AntialiasMode::NONE;
-    }
-
-    return AntialiasMode::DEFAULT;
-  }
+  virtual AntialiasMode GetDefaultAAMode();
 
   /** This allows getting a path that describes the outline of a set of glyphs.
    * A target is passed in so that the guarantee is made the returned path
@@ -750,6 +743,8 @@ public:
   virtual bool GetFontInstanceData(FontInstanceDataOutput, void *) { return false; }
 
   virtual bool GetFontDescriptor(FontDescriptorOutput, void *) { return false; }
+
+  virtual bool CanSerialize() { return false; }
 
   void AddUserData(UserDataKey *key, void *userData, void (*destroy)(void*)) {
     mUserData.Add(key, userData, destroy);
@@ -1010,13 +1005,23 @@ public:
                     const DrawOptions &aOptions = DrawOptions()) = 0;
 
   /**
-   * Fill a series of clyphs on the draw target with a certain source pattern.
+   * Fill a series of glyphs on the draw target with a certain source pattern.
    */
   virtual void FillGlyphs(ScaledFont *aFont,
                           const GlyphBuffer &aBuffer,
                           const Pattern &aPattern,
                           const DrawOptions &aOptions = DrawOptions(),
                           const GlyphRenderingOptions *aRenderingOptions = nullptr) = 0;
+
+  /**
+   * Stroke a series of glyphs on the draw target with a certain source pattern.
+   */
+  virtual void StrokeGlyphs(ScaledFont* aFont,
+                            const GlyphBuffer& aBuffer,
+                            const Pattern& aPattern,
+                            const StrokeOptions& aStrokeOptions = StrokeOptions(),
+                            const DrawOptions& aOptions = DrawOptions(),
+                            const GlyphRenderingOptions* aRenderingOptions = nullptr);
 
   /**
    * This takes a source pattern and a mask, and composites the source pattern

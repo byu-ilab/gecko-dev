@@ -28,6 +28,7 @@
 #include "nsITooltipListener.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/dom/TabContext.h"
+#include "mozilla/dom/CoalescedWheelData.h"
 #include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventForwards.h"
@@ -62,15 +63,12 @@ namespace widget {
 struct AutoCacheNativeKeyCommands;
 } // namespace widget
 
-namespace plugins {
-class PluginWidgetChild;
-} // namespace plugins
-
 namespace dom {
 
 class TabChild;
 class TabGroup;
 class ClonedMessageData;
+class CoalescedWheelData;
 class TabChildBase;
 
 class TabChildGlobal : public DOMEventTargetHelper,
@@ -259,6 +257,7 @@ class TabChild final : public TabChildBase,
                        public mozilla::ipc::IShmemAllocator
 {
   typedef mozilla::dom::ClonedMessageData ClonedMessageData;
+  typedef mozilla::dom::CoalescedWheelData CoalescedWheelData;
   typedef mozilla::layout::RenderFrameChild RenderFrameChild;
   typedef mozilla::layers::APZEventState APZEventState;
   typedef mozilla::layers::SetAllowedTouchBehaviorCallback SetAllowedTouchBehaviorCallback;
@@ -355,9 +354,11 @@ public:
   virtual mozilla::ipc::IPCResult
   RecvSizeModeChanged(const nsSizeMode& aSizeMode) override;
 
-  virtual mozilla::ipc::IPCResult RecvActivate() override;
+  mozilla::ipc::IPCResult RecvActivate();
 
-  virtual mozilla::ipc::IPCResult RecvDeactivate() override;
+  mozilla::ipc::IPCResult RecvDeactivate();
+
+  mozilla::ipc::IPCResult RecvParentActivated(const bool& aActivated);
 
   virtual mozilla::ipc::IPCResult RecvMouseEvent(const nsString& aType,
                                                  const float& aX,
@@ -470,10 +471,6 @@ public:
                          const nsString& aInitialColor) override;
 
   virtual bool DeallocPColorPickerChild(PColorPickerChild* aActor) override;
-
-    virtual PDatePickerChild*
-    AllocPDatePickerChild(const nsString& title, const nsString& initialDate) override;
-    virtual bool DeallocPDatePickerChild(PDatePickerChild* actor) override;
 
   virtual PFilePickerChild*
   AllocPFilePickerChild(const nsString& aTitle, const int16_t& aMode) override;
@@ -609,7 +606,9 @@ public:
 
   bool DeallocPPluginWidgetChild(PPluginWidgetChild* aActor) override;
 
+#ifdef XP_WIN
   nsresult CreatePluginWidget(nsIWidget* aParent, nsIWidget** aOut);
+#endif
 
   LayoutDeviceIntPoint GetClientOffset() const { return mClientOffset; }
   LayoutDeviceIntPoint GetChromeDisplacement() const { return mChromeDisp; };
@@ -621,6 +620,7 @@ public:
     return mParentIsActive;
   }
 
+  const mozilla::layers::CompositorOptions& GetCompositorOptions() const;
   bool AsyncPanZoomEnabled() const;
 
   virtual ScreenIntSize GetInnerSize() override;
@@ -663,16 +663,8 @@ public:
 
   // These methods return `true` if this TabChild is currently awaiting a
   // Large-Allocation header.
-  bool TakeAwaitingLargeAlloc();
+  bool StopAwaitingLargeAlloc();
   bool IsAwaitingLargeAlloc();
-
-  // Returns `true` if this this process was created to load a docshell in a
-  // "Fresh Process". This value is initialized to `false`, and is set to `true`
-  // in RecvSetFreshProcess.
-  static bool InLargeAllocProcess()
-  {
-    return sInLargeAllocProcess;
-  }
 
   already_AddRefed<nsISHistory> GetRelatedSHistory();
 
@@ -698,8 +690,6 @@ protected:
 
   virtual mozilla::ipc::IPCResult RecvSuppressDisplayport(const bool& aEnabled) override;
 
-  virtual mozilla::ipc::IPCResult RecvParentActivated(const bool& aActivated) override;
-
   virtual mozilla::ipc::IPCResult RecvSetKeyboardIndicators(const UIStateChangeType& aShowAccelerators,
                                                             const UIStateChangeType& aShowFocusRings) override;
 
@@ -715,8 +705,7 @@ protected:
 
   virtual mozilla::ipc::IPCResult RecvNotifyPartialSHistoryDeactive() override;
 
-  virtual mozilla::ipc::IPCResult RecvSetIsLargeAllocation(const bool& aIsLA,
-                                                           const bool& aNewProcess) override;
+  virtual mozilla::ipc::IPCResult RecvAwaitLargeAlloc() override;
 
 private:
   void HandleDoubleTap(const CSSPoint& aPoint, const Modifiers& aModifiers,
@@ -760,6 +749,17 @@ private:
   bool SkipRepeatedKeyEvent(const WidgetKeyboardEvent& aEvent);
 
   void UpdateRepeatedKeyEventEndTime(const WidgetKeyboardEvent& aEvent);
+
+  bool MaybeCoalesceWheelEvent(const WidgetWheelEvent& aEvent,
+                               const ScrollableLayerGuid& aGuid,
+                               const uint64_t& aInputBlockId,
+                               bool* aIsNextWheelEvent);
+
+  void MaybeDispatchCoalescedWheelEvent();
+
+  void DispatchWheelEvent(const WidgetWheelEvent& aEvent,
+                          const ScrollableLayerGuid& aGuid,
+                          const uint64_t& aInputBlockId);
 
   class DelayedDeleteRunnable;
 
@@ -816,6 +816,12 @@ private:
   // be skipped to not flood child process.
   mozilla::TimeStamp mRepeatedKeyEventTime;
 
+  // Similar to mRepeatedKeyEventTime, store the end time (from parent process)
+  // of handling the last repeated wheel event so that in case event handling
+  // takes time, some repeated events can be skipped to not flood child process.
+  mozilla::TimeStamp mLastWheelProcessedTimeFromParent;
+  CoalescedWheelData mCoalescedWheelData;
+
   AutoTArray<bool, NUMBER_OF_AUDIO_CHANNELS> mAudioChannelsActive;
 
   RefPtr<layers::IAPZCTreeManager> mApzcTreeManager;
@@ -827,8 +833,6 @@ private:
   // The handle associated with the native window that contains this tab
   uintptr_t mNativeWindowHandle;
 #endif // defined(XP_WIN)
-
-  static bool sInLargeAllocProcess;
 
   DISALLOW_EVIL_CONSTRUCTORS(TabChild);
 };

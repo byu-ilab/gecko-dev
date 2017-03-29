@@ -45,6 +45,7 @@ import org.mozilla.gecko.util.EventCallback;
 import org.mozilla.gecko.util.GeckoBundle;
 import org.mozilla.gecko.util.HardwareUtils;
 import org.mozilla.gecko.util.InputOptionsUtils;
+import org.mozilla.gecko.util.IntentUtils;
 import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.gecko.util.ViewUtil;
 
@@ -122,6 +123,9 @@ public class GeckoPreferences
     public static final String PREFS_HEALTHREPORT_UPLOAD_ENABLED = NON_PREF_PREFIX + "healthreport.uploadEnabled";
     public static final String PREFS_SYNC = NON_PREF_PREFIX + "sync";
 
+    // Has this activity recently started another Gecko activity?
+    private boolean mGeckoActivityOpened;
+
     private static boolean sIsCharEncodingEnabled;
     private boolean mInitialized;
     private PrefsHelper.PrefHandler mPrefsRequest;
@@ -168,6 +172,8 @@ public class GeckoPreferences
     public static final String PREFS_CATEGORY_EXPERIMENTAL_FEATURES = NON_PREF_PREFIX + "category_experimental";
     public static final String PREFS_COMPACT_TABS = NON_PREF_PREFIX + "compact_tabs";
     public static final String PREFS_SHOW_QUIT_MENU = NON_PREF_PREFIX + "distribution.show_quit_menu";
+    public static final String PREFS_SEARCH_SUGGESTIONS_ENABLED = "browser.search.suggest.enabled";
+    public static final String PREFS_DEFAULT_BROWSER = NON_PREF_PREFIX + "default_browser.link";
 
     private static final String ACTION_STUMBLER_UPLOAD_PREF = "STUMBLER_PREF";
 
@@ -178,6 +184,7 @@ public class GeckoPreferences
     public static final String PREFS_RESTORE_SESSION = NON_PREF_PREFIX + "restoreSession3";
     public static final String PREFS_RESTORE_SESSION_FROM_CRASH = "browser.sessionstore.resume_from_crash";
     public static final String PREFS_RESTORE_SESSION_MAX_CRASH_RESUMES = "browser.sessionstore.max_resumed_crashes";
+    public static final String PREFS_RESTORE_SESSION_ONCE = "browser.sessionstore.resume_session_once";
     public static final String PREFS_TAB_QUEUE = NON_PREF_PREFIX + "tab_queue";
     public static final String PREFS_TAB_QUEUE_LAST_SITE = NON_PREF_PREFIX + "last_site";
     public static final String PREFS_TAB_QUEUE_LAST_TIME = NON_PREF_PREFIX + "last_time";
@@ -233,6 +240,14 @@ public class GeckoPreferences
         }
     }
 
+    private void updateHomeAsUpIndicator() {
+        final ActionBar actionBar = getSupportActionBar();
+        if (actionBar == null) {
+            return;
+        }
+        actionBar.setHomeAsUpIndicator(android.support.v7.appcompat.R.drawable.abc_ic_ab_back_mtrl_am_alpha);
+    }
+
     /**
      * We only call this method for pre-HC versions of Android.
      */
@@ -263,10 +278,8 @@ public class GeckoPreferences
         //  If activity is not recreated, also update locale to current activity configuration
         BrowserLocaleManager.getInstance().updateConfiguration(GeckoPreferences.this, newLocale);
         ViewUtil.setLayoutDirection(getWindow().getDecorView(), newLocale);
-
         //  Force update navigate up icon by current layout direction
-        final ActionBar actionBar = getSupportActionBar();
-        actionBar.setHomeAsUpIndicator(android.support.v7.appcompat.R.drawable.abc_ic_ab_back_mtrl_am_alpha);
+        updateHomeAsUpIndicator();
 
         this.lastLocale = newLocale;
 
@@ -326,6 +339,11 @@ public class GeckoPreferences
     }
 
     private void checkLocale() {
+        if (AppConstants.Versions.feature21Plus && AppConstants.Versions.preMarshmallow) {
+            //  Force update navigate up icon by current layout direction
+            updateHomeAsUpIndicator();
+        }
+
         final Locale currentLocale = Locale.getDefault();
         Log.v(LOGTAG, "Checking locale: " + currentLocale + " vs " + lastLocale);
         if (currentLocale.equals(lastLocale)) {
@@ -546,6 +564,7 @@ public class GeckoPreferences
 
         if (getApplication() instanceof GeckoApplication) {
             ((GeckoApplication) getApplication()).onActivityResume(this);
+            mGeckoActivityOpened = false;
         }
 
         // Watch prefs, otherwise we don't reliably get told when they change.
@@ -569,6 +588,12 @@ public class GeckoPreferences
     }
 
     @Override
+    public void startActivityForResult(Intent intent, int request) {
+        mGeckoActivityOpened = IntentUtils.checkIfGeckoActivity(intent);
+        super.startActivityForResult(intent, request);
+    }
+
+    @Override
     public void startWithFragment(String fragmentName, Bundle args,
             Fragment resultTo, int resultRequestCode, int titleRes, int shortTitleRes) {
         Log.v(LOGTAG, "Starting with fragment: " + fragmentName + ", title " + titleRes);
@@ -578,6 +603,7 @@ public class GeckoPreferences
         if (resultTo == null) {
             startActivityForResultChoosingTransition(intent, REQUEST_CODE_PREF_SCREEN);
         } else {
+            mGeckoActivityOpened = IntentUtils.checkIfGeckoActivity(intent);
             resultTo.startActivityForResult(intent, resultRequestCode);
             if (NO_TRANSITIONS) {
                 overridePendingTransition(0, 0);
@@ -1225,6 +1251,10 @@ public class GeckoPreferences
         } else if (HANDLERS.containsKey(prefName)) {
             PrefHandler handler = HANDLERS.get(prefName);
             handler.onChange(this, preference, newValue);
+        } else if (PREFS_SEARCH_SUGGESTIONS_ENABLED.equals(prefName)) {
+            // Tell Gecko to transmit the current search engine data again, so
+            // BrowserSearch is notified immediately about the new enabled state.
+            EventDispatcher.getInstance().dispatch("SearchEngines:GetVisible", null);
         }
 
         // Send Gecko-side pref changes to Gecko
@@ -1509,7 +1539,7 @@ public class GeckoPreferences
 
     @Override
     public boolean isGeckoActivityOpened() {
-        return false;
+        return mGeckoActivityOpened;
     }
 
     /**

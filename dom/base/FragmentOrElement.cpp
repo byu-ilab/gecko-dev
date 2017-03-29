@@ -124,6 +124,7 @@
 
 #include "mozilla/dom/ShadowRoot.h"
 #include "mozilla/dom/HTMLTemplateElement.h"
+#include "mozilla/dom/SVGUseElement.h"
 
 #include "nsStyledElement.h"
 #include "nsIContentInlines.h"
@@ -342,6 +343,14 @@ nsIContent::LookupNamespaceURIInternal(const nsAString& aNamespacePrefix,
 already_AddRefed<nsIURI>
 nsIContent::GetBaseURI(bool aTryUseXHRDocBaseURI) const
 {
+  if (IsInAnonymousSubtree() && IsAnonymousContentInSVGUseSubtree()) {
+    nsIContent* bindingParent = GetBindingParent();
+    MOZ_ASSERT(bindingParent);
+    SVGUseElement* useElement = static_cast<SVGUseElement*>(bindingParent);
+    // XXX Ignore xml:base as we are removing it.
+    return do_AddRef(useElement->GetContentBaseURI());
+  }
+
   nsIDocument* doc = OwnerDoc();
   // Start with document base
   nsCOMPtr<nsIURI> base = doc->GetBaseURI(aTryUseXHRDocBaseURI);
@@ -371,12 +380,6 @@ nsIContent::GetBaseURI(bool aTryUseXHRDocBaseURI) const
       }
     }
 
-    nsIURI* explicitBaseURI = elem->GetExplicitBaseURI();
-    if (explicitBaseURI) {
-      base = explicitBaseURI;
-      break;
-    }
-
     // Otherwise check for xml:base attribute
     elem->GetAttr(kNameSpaceID_XML, nsGkAtoms::base, attr);
     if (!attr.IsEmpty()) {
@@ -385,24 +388,47 @@ nsIContent::GetBaseURI(bool aTryUseXHRDocBaseURI) const
     elem = elem->GetParent();
   } while(elem);
 
-  // Now resolve against all xml:base attrs
-  for (uint32_t i = baseAttrs.Length() - 1; i != uint32_t(-1); --i) {
-    nsCOMPtr<nsIURI> newBase;
-    nsresult rv = NS_NewURI(getter_AddRefs(newBase), baseAttrs[i],
-                            doc->GetDocumentCharacterSet().get(), base);
-    // Do a security check, almost the same as nsDocument::SetBaseURL()
-    // Only need to do this on the final uri
-    if (NS_SUCCEEDED(rv) && i == 0) {
-      rv = nsContentUtils::GetSecurityManager()->
-        CheckLoadURIWithPrincipal(NodePrincipal(), newBase,
-                                  nsIScriptSecurityManager::STANDARD);
+  if (!baseAttrs.IsEmpty()) {
+    doc->WarnOnceAbout(nsIDocument::eXMLBaseAttribute);
+    if (IsHTMLElement() || IsSVGElement() || IsXULElement()) {
+      doc->WarnOnceAbout(nsIDocument::eXMLBaseAttributeWithStyledElement);
     }
-    if (NS_SUCCEEDED(rv)) {
-      base.swap(newBase);
+    // Now resolve against all xml:base attrs
+    for (uint32_t i = baseAttrs.Length() - 1; i != uint32_t(-1); --i) {
+      nsCOMPtr<nsIURI> newBase;
+      nsresult rv = NS_NewURI(getter_AddRefs(newBase), baseAttrs[i],
+                              doc->GetDocumentCharacterSet().get(), base);
+      // Do a security check, almost the same as nsDocument::SetBaseURL()
+      // Only need to do this on the final uri
+      if (NS_SUCCEEDED(rv) && i == 0) {
+        rv = nsContentUtils::GetSecurityManager()->
+          CheckLoadURIWithPrincipal(NodePrincipal(), newBase,
+                                    nsIScriptSecurityManager::STANDARD);
+      }
+      if (NS_SUCCEEDED(rv)) {
+        base.swap(newBase);
+      }
     }
   }
 
   return base.forget();
+}
+
+already_AddRefed<nsIURI>
+nsIContent::GetBaseURIForStyleAttr() const
+{
+  if (!nsLayoutUtils::StyleAttrWithXMLBaseDisabled()) {
+    return GetBaseURI();
+  }
+  if (IsInAnonymousSubtree() && IsAnonymousContentInSVGUseSubtree()) {
+    nsIContent* bindingParent = GetBindingParent();
+    MOZ_ASSERT(bindingParent);
+    SVGUseElement* useElement = static_cast<SVGUseElement*>(bindingParent);
+    return do_AddRef(useElement->GetContentBaseURI());
+  }
+  // This also ignores the case that SVG inside XBL binding.
+  // But it is probably fine.
+  return do_AddRef(OwnerDoc()->GetDocBaseURI());
 }
 
 //----------------------------------------------------------------------
@@ -619,6 +645,12 @@ FragmentOrElement::nsDOMSlots::Traverse(nsCycleCollectionTraversalCallback &cb, 
     for (uint32_t i = 0; i < mCustomElementData->mCallbackQueue.Length(); i++) {
       mCustomElementData->mCallbackQueue[i]->Traverse(cb);
     }
+  }
+
+  for (auto iter = mRegisteredIntersectionObservers.Iter(); !iter.Done(); iter.Next()) {
+    DOMIntersectionObserver* observer = iter.Key();
+    NS_CYCLE_COLLECTION_NOTE_EDGE_NAME(cb, "mSlots->mRegisteredIntersectionObservers[i]");
+    cb.NoteXPCOMChild(observer);
   }
 }
 
@@ -1120,24 +1152,6 @@ FragmentOrElement::SetXBLInsertionParent(nsIContent* aContent)
   }
 }
 
-CustomElementData*
-FragmentOrElement::GetCustomElementData() const
-{
-  nsDOMSlots *slots = GetExistingDOMSlots();
-  if (slots) {
-    return slots->mCustomElementData;
-  }
-  return nullptr;
-}
-
-void
-FragmentOrElement::SetCustomElementData(CustomElementData* aData)
-{
-  nsDOMSlots *slots = DOMSlots();
-  MOZ_ASSERT(!slots->mCustomElementData, "Custom element data may not be changed once set.");
-  slots->mCustomElementData = aData;
-}
-
 nsresult
 FragmentOrElement::InsertChildAt(nsIContent* aKid,
                                 uint32_t aIndex,
@@ -1237,6 +1251,7 @@ class ContentUnbinder : public Runnable
 {
 public:
   ContentUnbinder()
+    : Runnable("ContentUnbinder")
   {
     mLast = this;
   }
@@ -1879,7 +1894,8 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(FragmentOrElement)
     }
 
     nsAutoString classes;
-    const nsAttrValue* classAttrValue = tmp->GetClasses();
+    const nsAttrValue* classAttrValue = tmp->IsElement() ?
+      tmp->AsElement()->GetClasses() : nullptr;
     if (classAttrValue) {
       classes.AppendLiteral(" class='");
       nsAutoString classString;
@@ -2051,6 +2067,12 @@ FragmentOrElement::AppendText(const char16_t* aBuffer, uint32_t aLength,
 
 bool
 FragmentOrElement::TextIsOnlyWhitespace()
+{
+  return false;
+}
+
+bool
+FragmentOrElement::ThreadSafeTextIsOnlyWhitespace() const
 {
   return false;
 }

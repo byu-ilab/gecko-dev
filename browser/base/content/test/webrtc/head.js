@@ -241,6 +241,18 @@ function expectNoObserverCalled(aIgnoreDeviceEvents = false) {
   });
 }
 
+function ignoreObserversCalled() {
+  return new Promise(resolve => {
+    let mm = _mm();
+    mm.addMessageListener("Test:ExpectNoObserverCalled:Reply",
+                          function listener() {
+      mm.removeMessageListener("Test:ExpectNoObserverCalled:Reply", listener);
+      resolve();
+    });
+    mm.sendAsyncMessage("Test:ExpectNoObserverCalled");
+  });
+}
+
 function promiseMessageReceived() {
   return new Promise((resolve, reject) => {
     let mm = _mm();
@@ -407,12 +419,14 @@ function* closeStream(aAlreadyClosed, aFrameId, aStreamCount = 1) {
 
 function* reloadAndAssertClosedStreams() {
   info("reloading the web page");
-  let promise = promiseObserverCalled("recording-device-events");
+  let promises = [
+    promiseObserverCalled("recording-device-events"),
+    promiseObserverCalled("recording-window-ended")
+  ];
   yield ContentTask.spawn(gBrowser.selectedBrowser, null,
                           "() => content.location.reload()");
-  yield promise;
+  yield Promise.all(promises);
 
-  yield expectObserverCalled("recording-window-ended");
   yield expectNoObserverCalled();
   yield checkNotSharing();
 }
@@ -437,7 +451,9 @@ function checkDeviceSelectors(aAudio, aVideo, aScreen) {
     ok(screenSelector.hidden, "screen selector hidden");
 }
 
-function* checkSharingUI(aExpected, aWin = window) {
+// aExpected is for the current tab,
+// aExpectedGlobal is for all tabs.
+function* checkSharingUI(aExpected, aWin = window, aExpectedGlobal = null) {
   let doc = aWin.document;
   // First check the icon above the control center (i) icon.
   let identityBox = doc.getElementById("identity-box");
@@ -481,7 +497,7 @@ function* checkSharingUI(aExpected, aWin = window) {
   aWin.gIdentityHandler._identityPopup.hidden = true;
 
   // Check the global indicators.
-  yield* assertWebRTCIndicatorStatus(aExpected);
+  yield* assertWebRTCIndicatorStatus(aExpectedGlobal || aExpected);
 }
 
 function* checkNotSharing() {

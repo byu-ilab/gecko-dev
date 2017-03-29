@@ -142,8 +142,6 @@ FOR_EACH_PUBLIC_TAGGED_GC_POINTER_TYPE(DECLARE_IS_HEAP_CONSTRUCTIBLE_TYPE)
 template <typename T, typename Wrapper>
 class PersistentRootedBase : public MutableWrappedPtrOperations<T, Wrapper> {};
 
-static void* const ConstNullValue = nullptr;
-
 namespace gc {
 struct Cell;
 template<typename T>
@@ -325,18 +323,30 @@ ObjectIsMarkedGray(const JS::Heap<JSObject*>& obj)
     return ObjectIsMarkedGray(obj.unbarrieredGet());
 }
 
-static MOZ_ALWAYS_INLINE bool
-ScriptIsMarkedGray(JSScript* script)
+// The following *IsNotGray functions are for use in assertions and take account
+// of the eventual gray marking state at the end of any ongoing incremental GC.
+#ifdef DEBUG
+inline bool
+CellIsNotGray(js::gc::Cell* maybeCell)
 {
-    auto cell = reinterpret_cast<js::gc::Cell*>(script);
-    return js::gc::detail::CellIsMarkedGrayIfKnown(cell);
+    if (!maybeCell)
+        return true;
+
+    return js::gc::detail::CellIsNotGray(maybeCell);
 }
 
-static MOZ_ALWAYS_INLINE bool
-ScriptIsMarkedGray(const Heap<JSScript*>& script)
+inline bool
+ObjectIsNotGray(JSObject* maybeObj)
 {
-    return ScriptIsMarkedGray(script.unbarrieredGet());
+    return CellIsNotGray(reinterpret_cast<js::gc::Cell*>(maybeObj));
 }
+
+inline bool
+ObjectIsNotGray(const JS::Heap<JSObject*>& obj)
+{
+    return ObjectIsNotGray(obj.unbarrieredGet());
+}
+#endif
 
 /**
  * The TenuredHeap<T> class is similar to the Heap<T> class above in that it
@@ -471,7 +481,8 @@ class MOZ_NONHEAP_CLASS Handle : public js::HandleBase<T, Handle<T>>
     MOZ_IMPLICIT Handle(decltype(nullptr)) {
         static_assert(mozilla::IsPointer<T>::value,
                       "nullptr_t overload not valid for non-pointer types");
-        ptr = reinterpret_cast<const T*>(&js::ConstNullValue);
+        static void* const ConstNullValue = nullptr;
+        ptr = reinterpret_cast<const T*>(&ConstNullValue);
     }
 
     MOZ_IMPLICIT Handle(MutableHandle<T> handle) {
@@ -1208,13 +1219,13 @@ class JS_PUBLIC_API(ObjectPtr)
     JSObject* unbarrieredGet() const { return value.unbarrieredGet(); }
 
     void writeBarrierPre(JSContext* cx) {
-        IncrementalObjectBarrier(value);
+        IncrementalPreWriteBarrier(value);
     }
 
     void updateWeakPointerAfterGC();
 
     ObjectPtr& operator=(JSObject* obj) {
-        IncrementalObjectBarrier(value);
+        IncrementalPreWriteBarrier(value);
         value = obj;
         return *this;
     }

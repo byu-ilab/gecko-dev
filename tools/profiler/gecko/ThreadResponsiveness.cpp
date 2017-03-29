@@ -9,7 +9,6 @@
 #include "nsThreadUtils.h"
 #include "nsITimer.h"
 #include "mozilla/Monitor.h"
-#include "ProfileEntry.h"
 
 using mozilla::Monitor;
 using mozilla::MonitorAutoLock;
@@ -32,6 +31,8 @@ protected:
   }
 
 public:
+
+  // Can only run on the main thread.
   NS_IMETHOD Run() override
   {
     MonitorAutoLock mon(mMonitor);
@@ -96,18 +97,15 @@ ThreadResponsiveness::~ThreadResponsiveness()
 void
 ThreadResponsiveness::Update(bool aIsMainThread, nsIThread* aThread)
 {
-  if (!mActiveTracerEvent) {
-    if (aIsMainThread) {
-      mActiveTracerEvent = new CheckResponsivenessTask();
-      NS_DispatchToMainThread(mActiveTracerEvent);
-    } else if (aThread) {
-      mActiveTracerEvent = new CheckResponsivenessTask();
-      aThread->Dispatch(mActiveTracerEvent, NS_DISPATCH_NORMAL);
-    }
+  if (!aIsMainThread) {
+    return;
   }
 
-  if (mActiveTracerEvent) {
-    mLastTracerTime = mActiveTracerEvent->GetLastTracerTime();
+  if (!mActiveTracerEvent) {
+    mActiveTracerEvent = new CheckResponsivenessTask();
+    NS_DispatchToMainThread(mActiveTracerEvent);
   }
+
+  mLastTracerTime = mActiveTracerEvent->GetLastTracerTime();
 }
 

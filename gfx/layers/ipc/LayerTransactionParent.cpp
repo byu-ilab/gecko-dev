@@ -15,6 +15,7 @@
 #include "CompositorBridgeParent.h"
 #include "gfxPrefs.h"
 #include "mozilla/gfx/BasePoint3D.h"    // for BasePoint3D
+#include "mozilla/layers/AnimationHelper.h" // for GetAnimatedPropValue
 #include "mozilla/layers/CanvasLayerComposite.h"
 #include "mozilla/layers/ColorLayerComposite.h"
 #include "mozilla/layers/Compositor.h"  // for Compositor
@@ -27,6 +28,7 @@
 #include "mozilla/layers/TextureHostOGL.h"  // for TextureHostOGL
 #include "mozilla/layers/PaintedLayerComposite.h"
 #include "mozilla/mozalloc.h"           // for operator delete, etc
+#include "mozilla/SizePrintfMacros.h"
 #include "mozilla/Unused.h"
 #include "nsCoord.h"                    // for NSAppUnitsToFloatPixels
 #include "nsDebug.h"                    // for NS_RUNTIMEABORT
@@ -40,8 +42,6 @@
 #include "GeckoProfiler.h"
 #include "mozilla/layers/TextureHost.h"
 #include "mozilla/layers/AsyncCompositionManager.h"
-
-typedef std::vector<mozilla::layers::EditReply> EditReplyVector;
 
 using mozilla::layout::RenderFrameParent;
 
@@ -96,12 +96,6 @@ LayerTransactionParent::Destroy()
   mCompositables.clear();
 }
 
-mozilla::ipc::IPCResult
-LayerTransactionParent::RecvUpdateNoSwap(const TransactionInfo& txn)
-{
-  return RecvUpdate(txn, nullptr);
-}
-
 class MOZ_STACK_CLASS AutoLayerTransactionParentAsyncMessageSender
 {
 public:
@@ -140,8 +134,16 @@ LayerTransactionParent::RecvPaintTime(const uint64_t& aTransactionId,
 }
 
 mozilla::ipc::IPCResult
-LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
-                                   InfallibleTArray<EditReply>* reply)
+LayerTransactionParent::RecvInitReadLocks(ReadLockArray&& aReadLocks)
+{
+  if (!AddReadLocks(Move(aReadLocks))) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+  return IPC_OK();
+}
+
+mozilla::ipc::IPCResult
+LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo)
 {
   GeckoProfilerTracingRAII tracer("Paint", "LayerTransaction");
   PROFILER_LABEL("LayerTransactionParent", "RecvUpdate",
@@ -151,9 +153,10 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
   TimeStamp updateStart = TimeStamp::Now();
 #endif
 
-  MOZ_LAYERS_LOG(("[ParentSide] received txn with %d edits", aInfo.cset().Length()));
+  MOZ_LAYERS_LOG(("[ParentSide] received txn with %" PRIuSIZE " edits", aInfo.cset().Length()));
 
   UpdateFwdTransactionId(aInfo.fwdTransactionId());
+  AutoClearReadLocks clearLocks(mReadLocks);
 
   if (mDestroyed || !layer_manager() || layer_manager()->IsDestroyed()) {
     for (const auto& op : aInfo.toDestroy()) {
@@ -165,7 +168,6 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
   // This ensures that destroy operations are always processed. It is not safe
   // to early-return from RecvUpdate without doing so.
   AutoLayerTransactionParentAsyncMessageSender autoAsyncMessageSender(this, &aInfo.toDestroy());
-  EditReplyVector replyv;
 
   {
     AutoResolveRefLayers resolve(mCompositorBridge->GetCompositionManager(this));
@@ -385,8 +387,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
       break;
     }
     case Edit::TCompositableOperation: {
-      if (!ReceiveCompositableUpdate(edit.get_CompositableOperation(),
-                                replyv)) {
+      if (!ReceiveCompositableUpdate(edit.get_CompositableOperation())) {
         return IPC_FAIL_NO_REASON(this);
       }
       break;
@@ -462,7 +463,7 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
 
   // Process paints separately, after all normal edits.
   for (const auto& op : aInfo.paints()) {
-    if (!ReceiveCompositableUpdate(op, replyv)) {
+    if (!ReceiveCompositableUpdate(op)) {
       return IPC_FAIL_NO_REASON(this);
     }
   }
@@ -472,13 +473,6 @@ LayerTransactionParent::RecvUpdate(const TransactionInfo& aInfo,
   {
     AutoResolveRefLayers resolve(mCompositorBridge->GetCompositionManager(this));
     layer_manager()->EndTransaction(TimeStamp(), LayerManager::END_NO_IMMEDIATE_REDRAW);
-  }
-
-  if (reply) {
-    reply->SetCapacity(replyv.size());
-    if (replyv.size() > 0) {
-      reply->AppendElements(&replyv.front(), replyv.size());
-    }
   }
 
   if (!IsSameProcess()) {
@@ -535,7 +529,7 @@ LayerTransactionParent::SetLayerAttributes(const OpSetLayerAttributes& aOp)
   } else {
     layer->SetMaskLayer(nullptr);
   }
-  layer->SetAnimations(common.animations());
+  layer->SetCompositorAnimations(common.compositorAnimations());
   layer->SetScrollMetadata(common.scrollMetadata());
   layer->SetDisplayListLog(common.displayListLog().get());
 
@@ -702,7 +696,7 @@ LayerTransactionParent::RecvLeaveTestMode()
 }
 
 mozilla::ipc::IPCResult
-LayerTransactionParent::RecvGetAnimationOpacity(const LayerHandle& aParent,
+LayerTransactionParent::RecvGetAnimationOpacity(const uint64_t& aCompositorAnimationsId,
                                                 float* aOpacity,
                                                 bool* aHasAnimationOpacity)
 {
@@ -711,32 +705,31 @@ LayerTransactionParent::RecvGetAnimationOpacity(const LayerHandle& aParent,
     return IPC_FAIL_NO_REASON(this);
   }
 
-  RefPtr<Layer> layer = AsLayer(aParent);
-  if (!layer) {
+  mCompositorBridge->ApplyAsyncProperties(this);
+
+  CompositorAnimationStorage* storage =
+    mCompositorBridge->GetAnimationStorage(GetId());
+
+  if (!storage) {
     return IPC_FAIL_NO_REASON(this);
   }
 
-  mCompositorBridge->ApplyAsyncProperties(this);
+  auto value = storage->GetAnimatedValue(aCompositorAnimationsId);
 
-  if (!layer->AsHostLayer()->GetShadowOpacitySetByAnimation()) {
+  if (!value || value->mType != AnimatedValue::OPACITY) {
     return IPC_OK();
   }
 
-  *aOpacity = layer->GetLocalOpacity();
+  *aOpacity = value->mOpacity;
   *aHasAnimationOpacity = true;
   return IPC_OK();
 }
 
 mozilla::ipc::IPCResult
-LayerTransactionParent::RecvGetAnimationTransform(const LayerHandle& aLayerHandle,
+LayerTransactionParent::RecvGetAnimationTransform(const uint64_t& aCompositorAnimationsId,
                                                   MaybeTransform* aTransform)
 {
   if (mDestroyed || !layer_manager() || layer_manager()->IsDestroyed()) {
-    return IPC_FAIL_NO_REASON(this);
-  }
-
-  Layer* layer = AsLayer(aLayerHandle);
-  if (!layer) {
     return IPC_FAIL_NO_REASON(this);
   }
 
@@ -746,50 +739,24 @@ LayerTransactionParent::RecvGetAnimationTransform(const LayerHandle& aLayerHandl
   // the value.
   mCompositorBridge->ApplyAsyncProperties(this);
 
-  // This method is specific to transforms applied by animation.
-  // This is because this method uses the information stored with an animation
-  // such as the origin of the reference frame corresponding to the layer, to
-  // recover the untranslated transform from the shadow transform. For
-  // transforms that are not set by animation we don't have this information
-  // available.
-  if (!layer->AsHostLayer()->GetShadowTransformSetByAnimation()) {
+  CompositorAnimationStorage* storage =
+    mCompositorBridge->GetAnimationStorage(GetId());
+
+  if (!storage) {
+    return IPC_FAIL_NO_REASON(this);
+  }
+
+  auto value = storage->GetAnimatedValue(aCompositorAnimationsId);
+
+  if (!value || value->mType != AnimatedValue::TRANSFORM) {
     *aTransform = mozilla::void_t();
     return IPC_OK();
   }
 
-  // The following code recovers the untranslated transform
-  // from the shadow transform by undoing the translations in
-  // AsyncCompositionManager::SampleValue.
-
-  Matrix4x4 transform = layer->AsHostLayer()->GetShadowBaseTransform();
-  if (ContainerLayer* c = layer->AsContainerLayer()) {
-    // Undo the scale transform applied by AsyncCompositionManager::SampleValue
-    transform.PostScale(1.0f/c->GetInheritedXScale(),
-                        1.0f/c->GetInheritedYScale(),
-                        1.0f);
-  }
-  float scale = 1;
-  Point3D scaledOrigin;
-  Point3D transformOrigin;
-  for (uint32_t i=0; i < layer->GetAnimations().Length(); i++) {
-    if (layer->GetAnimations()[i].data().type() == AnimationData::TTransformData) {
-      const TransformData& data = layer->GetAnimations()[i].data().get_TransformData();
-      scale = data.appUnitsPerDevPixel();
-      scaledOrigin =
-        Point3D(NS_round(NSAppUnitsToFloatPixels(data.origin().x, scale)),
-                NS_round(NSAppUnitsToFloatPixels(data.origin().y, scale)),
-                0.0f);
-      transformOrigin = data.transformOrigin();
-      break;
-    }
-  }
-
-  // If our parent isn't a perspective layer, then the offset into reference
-  // frame coordinates will have been applied to us. Add an inverse translation
-  // to cancel it out.
-  if (!layer->GetParent() || !layer->GetParent()->GetTransformIsPerspective()) {
-    transform.PostTranslate(-scaledOrigin.x, -scaledOrigin.y, -scaledOrigin.z);
-  }
+  Matrix4x4 transform = value->mTransform.mFrameTransform;
+  const TransformData& data = value->mTransform.mData;
+  float scale = data.appUnitsPerDevPixel();
+  Point3D transformOrigin = data.transformOrigin();
 
   // Undo the rebasing applied by
   // nsDisplayTransform::GetResultingTransformMatrixInternal
@@ -906,15 +873,15 @@ LayerTransactionParent::Attach(Layer* aLayer,
     return false;
   }
 
-  Compositor* compositor
-    = static_cast<HostLayerManager*>(aLayer->Manager())->GetCompositor();
+  TextureSourceProvider* provider =
+    static_cast<HostLayerManager*>(aLayer->Manager())->GetTextureSourceProvider();
 
   if (!layer->SetCompositableHost(aCompositable)) {
     // not all layer types accept a compositable, see bug 967824
     return false;
   }
   aCompositable->Attach(aLayer,
-                        compositor,
+                        provider,
                         aIsAsync
                           ? CompositableHost::ALLOW_REATTACH
                             | CompositableHost::KEEP_ATTACHED

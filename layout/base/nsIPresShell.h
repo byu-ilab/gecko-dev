@@ -78,7 +78,8 @@ class nsIDOMNode;
 class nsCSSFrameConstructor;
 class nsISelection;
 template<class E> class nsCOMArray;
-class nsWeakFrame;
+class AutoWeakFrame;
+class WeakFrame;
 class nsIScrollableFrame;
 class gfxContext;
 class nsIDOMEvent;
@@ -580,10 +581,69 @@ public:
    * than the document itself) should probably be calling
    * nsIDocument::FlushPendingNotifications.
    *
+   * This method can execute script, which can destroy this presshell object
+   * unless someone is holding a reference to it on the stack.  The presshell
+   * itself will ensure it lives up until the method returns, but callers who
+   * plan to use the presshell after this call should hold a strong ref
+   * themselves!
+   *
    * @param aType the type of notifications to flush
    */
-  virtual void FlushPendingNotifications(mozilla::FlushType aType) = 0;
-  virtual void FlushPendingNotifications(mozilla::ChangesToFlush aType) = 0;
+public:
+  void FlushPendingNotifications(mozilla::FlushType aType)
+  {
+    if (!NeedFlush(aType)) {
+      return;
+    }
+
+    DoFlushPendingNotifications(aType);
+  }
+
+  void FlushPendingNotifications(mozilla::ChangesToFlush aType)
+  {
+    if (!NeedFlush(aType.mFlushType)) {
+      return;
+    }
+
+    DoFlushPendingNotifications(aType);
+  }
+
+protected:
+  /**
+   * Implementation methods for FlushPendingNotifications.
+   */
+  virtual void DoFlushPendingNotifications(mozilla::FlushType aType) = 0;
+  virtual void DoFlushPendingNotifications(mozilla::ChangesToFlush aType) = 0;
+
+public:
+  /**
+   * Whether we might need a flush for the given flush type.  If this
+   * function returns false, we definitely don't need to flush.
+   *
+   * @param aFlushType The flush type to check.  This must be
+   *   >= FlushType::Style.  This also returns true if a throttled
+   *   animation flush is required.
+   */
+  bool NeedFlush(mozilla::FlushType aType) const
+  {
+    // We check mInFlush to handle re-entrant calls to FlushPendingNotifications
+    // by reporting that we always need a flush in that case.  Otherwise,
+    // we could end up missing needed flushes, since we clear the mNeedXXXFlush
+    // flags at the top of FlushPendingNotifications.
+    MOZ_ASSERT(aType >= mozilla::FlushType::Style);
+    return mNeedStyleFlush ||
+           (mNeedLayoutFlush &&
+            aType >= mozilla::FlushType::InterruptibleLayout) ||
+           aType >= mozilla::FlushType::Display ||
+           mNeedThrottledAnimationFlush ||
+           mInFlush;
+  }
+
+  inline void SetNeedStyleFlush();
+  inline void SetNeedLayoutFlush();
+  inline void SetNeedThrottledAnimationFlush();
+
+  bool NeedStyleFlush() { return mNeedStyleFlush; }
 
   /**
    * Callbacks will be called even if reflow itself fails for
@@ -962,7 +1022,7 @@ public:
   /**
    * Reconstruct frames for all elements in the document
    */
-  virtual nsresult ReconstructFrames() = 0;
+  virtual void ReconstructFrames() = 0;
 
   /**
    * Notify that a content node's state has changed
@@ -1133,10 +1193,20 @@ public:
                   mozilla::LayoutDeviceIntRect* aScreenRect,
                   uint32_t aFlags) = 0;
 
-  void AddWeakFrameInternal(nsWeakFrame* aWeakFrame);
-  virtual void AddWeakFrameExternal(nsWeakFrame* aWeakFrame);
+  void AddAutoWeakFrameInternal(AutoWeakFrame* aWeakFrame);
+  virtual void AddAutoWeakFrameExternal(AutoWeakFrame* aWeakFrame);
+  void AddWeakFrameInternal(WeakFrame* aWeakFrame);
+  virtual void AddWeakFrameExternal(WeakFrame* aWeakFrame);
 
-  void AddWeakFrame(nsWeakFrame* aWeakFrame)
+  void AddAutoWeakFrame(AutoWeakFrame* aWeakFrame)
+  {
+#ifdef MOZILLA_INTERNAL_API
+    AddAutoWeakFrameInternal(aWeakFrame);
+#else
+    AddAutoWeakFrameExternal(aWeakFrame);
+#endif
+  }
+  void AddWeakFrame(WeakFrame* aWeakFrame)
   {
 #ifdef MOZILLA_INTERNAL_API
     AddWeakFrameInternal(aWeakFrame);
@@ -1145,10 +1215,20 @@ public:
 #endif
   }
 
-  void RemoveWeakFrameInternal(nsWeakFrame* aWeakFrame);
-  virtual void RemoveWeakFrameExternal(nsWeakFrame* aWeakFrame);
+  void RemoveAutoWeakFrameInternal(AutoWeakFrame* aWeakFrame);
+  virtual void RemoveAutoWeakFrameExternal(AutoWeakFrame* aWeakFrame);
+  void RemoveWeakFrameInternal(WeakFrame* aWeakFrame);
+  virtual void RemoveWeakFrameExternal(WeakFrame* aWeakFrame);
 
-  void RemoveWeakFrame(nsWeakFrame* aWeakFrame)
+  void RemoveAutoWeakFrame(AutoWeakFrame* aWeakFrame)
+  {
+#ifdef MOZILLA_INTERNAL_API
+    RemoveAutoWeakFrameInternal(aWeakFrame);
+#else
+    RemoveAutoWeakFrameExternal(aWeakFrame);
+#endif
+  }
+  void RemoveWeakFrame(WeakFrame* aWeakFrame)
   {
 #ifdef MOZILLA_INTERNAL_API
     RemoveWeakFrameInternal(aWeakFrame);
@@ -1280,11 +1360,11 @@ public:
     }
   };
 
-  static void DispatchGotOrLostPointerCaptureEvent(bool aIsGotCapture,
-                                                   uint32_t aPointerId,
-                                                   uint16_t aPointerType,
-                                                   bool aIsPrimary,
-                                                   nsIContent* aCaptureTarget);
+  static void DispatchGotOrLostPointerCaptureEvent(
+                bool aIsGotCapture,
+                const mozilla::WidgetPointerEvent* aPointerEvent,
+                nsIContent* aCaptureTarget);
+
   static PointerCaptureInfo* GetPointerCaptureInfo(uint32_t aPointerId);
   static void SetPointerCapturingContent(uint32_t aPointerId,
                                          nsIContent* aContent);
@@ -1293,8 +1373,8 @@ public:
 
   // CheckPointerCaptureState checks cases, when got/lostpointercapture events
   // should be fired.
-  static void CheckPointerCaptureState(uint32_t aPointerId,
-                                       uint16_t aPointerType, bool aIsPrimary);
+  static void CheckPointerCaptureState(
+                const mozilla::WidgetPointerEvent* aPointerEvent);
 
   // GetPointerInfo returns true if pointer with aPointerId is situated in
   // device, false otherwise.
@@ -1567,12 +1647,6 @@ public:
     mFontSizeInflationEnabledIsDirty = true;
   }
 
-  virtual void AddInvalidateHiddenPresShellObserver(nsRefreshDriver *aDriver) = 0;
-
-  void InvalidatePresShellIfHidden();
-  void CancelInvalidatePresShellIfHidden();
-
-
   //////////////////////////////////////////////////////////////////////////////
   // Approximate frame visibility tracking public API.
   //////////////////////////////////////////////////////////////////////////////
@@ -1712,6 +1786,12 @@ public:
 
   virtual nsIDocument* GetPrimaryContentDocument() = 0;
 
+  // aSheetType is one of the nsIStyleSheetService *_SHEET constants.
+  virtual void NotifyStyleSheetServiceSheetAdded(mozilla::StyleSheet* aSheet,
+                                                 uint32_t aSheetType) = 0;
+  virtual void NotifyStyleSheetServiceSheetRemoved(mozilla::StyleSheet* aSheet,
+                                                   uint32_t aSheetType) = 0;
+
 protected:
   friend class nsRefreshDriver;
 
@@ -1732,10 +1812,6 @@ protected:
   // GetRootFrame() can be inlined:
   nsFrameManagerBase*       mFrameManager;
   mozilla::WeakPtr<nsDocShell>                 mForwardingContainer;
-  nsRefreshDriver* MOZ_UNSAFE_REF("These two objects hold weak references "
-                                  "to each other, and the validity of this "
-                                  "member is ensured by the logic in nsIPresShell.")
-                            mHiddenInvalidationObserverRefreshDriver;
 #ifdef ACCESSIBILITY
   mozilla::a11y::DocAccessible* mDocAccessible;
 #endif
@@ -1760,8 +1836,11 @@ protected:
 
   nsSize                    mScrollPositionClampingScrollPortSize;
 
-  // A list of weak frames. This is a pointer to the last item in the list.
-  nsWeakFrame*              mWeakFrames;
+  // A list of stack weak frames. This is a pointer to the last item in the list.
+  AutoWeakFrame*            mAutoWeakFrames;
+
+  // A hash table of heap allocated weak frames.
+  nsTHashtable<nsPtrHashKey<WeakFrame>> mWeakFrames;
 
   // Most recent canvas background color.
   nscolor                   mCanvasBackgroundColor;
@@ -1805,6 +1884,16 @@ protected:
   bool                      mSuppressInterruptibleReflows : 1;
   bool                      mScrollPositionClampingScrollPortSizeSet : 1;
 
+  // True if a layout flush might not be a no-op
+  bool mNeedLayoutFlush : 1;
+
+  // True if a style flush might not be a no-op
+  bool mNeedStyleFlush : 1;
+
+  // True if there are throttled animations that would be processed when
+  // performing a flush with mFlushAnimations == true.
+  bool mNeedThrottledAnimationFlush : 1;
+
   uint32_t                  mPresShellId;
 
   // List of subtrees rooted at style scope roots that need to be restyled.
@@ -1835,6 +1924,10 @@ protected:
   // to true, so we can avoid any paint calls for widget related to this
   // presshell.
   bool mIsNeverPainting;
+
+  // Whether we're currently under a FlushPendingNotifications.
+  // This is used to handle flush reentry correctly.
+  bool mInFlush;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsIPresShell, NS_IPRESSHELL_IID)

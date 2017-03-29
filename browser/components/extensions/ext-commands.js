@@ -74,15 +74,14 @@ CommandList.prototype = {
     // For Windows, chrome.runtime expects 'win' while chrome.commands
     // expects 'windows'.  We can special case this for now.
     let os = PlatformInfo.os == "win" ? "windows" : PlatformInfo.os;
-    for (let name of Object.keys(manifest.commands)) {
-      let command = manifest.commands[name];
-      let shortcut = command.suggested_key[os] || command.suggested_key.default;
-      if (shortcut) {
-        commands.set(name, {
-          description: command.description,
-          shortcut: shortcut.replace(/\s+/g, ""),
-        });
-      }
+    for (let [name, command] of Object.entries(manifest.commands)) {
+      let suggested_key = command.suggested_key || {};
+      let shortcut = suggested_key[os] || suggested_key.default;
+      shortcut = shortcut ? shortcut.replace(/\s+/g, "") : null;
+      commands.set(name, {
+        description: command.description,
+        shortcut,
+      });
     }
     return commands;
   },
@@ -96,8 +95,10 @@ CommandList.prototype = {
     let keyset = doc.createElementNS(XUL_NS, "keyset");
     keyset.id = `ext-keyset-id-${this.id}`;
     this.commands.forEach((command, name) => {
-      let keyElement = this.buildKey(doc, name, command.shortcut);
-      keyset.appendChild(keyElement);
+      if (command.shortcut) {
+        let keyElement = this.buildKey(doc, name, command.shortcut);
+        keyset.appendChild(keyElement);
+      }
     });
     doc.documentElement.appendChild(keyset);
     this.keysetsMap.set(window, keyset);
@@ -125,16 +126,22 @@ CommandList.prototype = {
     // We remove all references to the key elements when the extension is shutdown,
     // therefore the listeners for these elements will be garbage collected.
     keyElement.addEventListener("command", (event) => {
+      let action;
       if (name == "_execute_page_action") {
-        let win = event.target.ownerGlobal;
-        pageActionFor(this.extension).triggerAction(win);
+        action = pageActionFor(this.extension);
       } else if (name == "_execute_browser_action") {
-        let win = event.target.ownerGlobal;
-        browserActionFor(this.extension).triggerAction(win);
+        action = browserActionFor(this.extension);
+      } else if (name == "_execute_sidebar_action") {
+        action = sidebarActionFor(this.extension);
       } else {
         this.extension.tabManager
             .addActiveTabPermission();
         this.emit("command", name);
+        return;
+      }
+      if (action) {
+        let win = event.target.ownerGlobal;
+        action.triggerAction(win);
       }
     });
     /* eslint-enable mozilla/balanced-listeners */

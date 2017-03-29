@@ -7,6 +7,7 @@
 #include "HitTestingTreeNode.h"
 
 #include "AsyncPanZoomController.h"                     // for AsyncPanZoomController
+#include "gfxPrefs.h"
 #include "LayersLogging.h"                              // for Stringify
 #include "mozilla/gfx/Point.h"                          // for Point4D
 #include "mozilla/layers/APZThreadUtils.h"              // for AssertOnCompositorThread
@@ -125,6 +126,12 @@ bool
 HitTestingTreeNode::IsScrollbarNode() const
 {
   return mIsScrollbarContainer || (mScrollDir != ScrollDirection::NONE);
+}
+
+FrameMetrics::ViewID
+HitTestingTreeNode::GetScrollTargetId() const
+{
+  return mScrollViewId;
 }
 
 void

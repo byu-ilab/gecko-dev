@@ -12,6 +12,8 @@ EXTRA_JS_MODULES += [
     'ExtensionContent.jsm',
     'ExtensionManagement.jsm',
     'ExtensionParent.jsm',
+    'ExtensionPreferencesManager.jsm',
+    'ExtensionSettingsStore.jsm',
     'ExtensionStorage.jsm',
     'ExtensionStorageSync.jsm',
     'ExtensionTabs.jsm',
@@ -19,6 +21,7 @@ EXTRA_JS_MODULES += [
     'LegacyExtensionsUtils.jsm',
     'MessageChannel.jsm',
     'NativeMessaging.jsm',
+    'ProxyScriptContext.jsm',
     'Schemas.jsm',
 ]
 
@@ -35,6 +38,10 @@ DIRS += ['schemas']
 
 JAR_MANIFESTS += ['jar.mn']
 
+BROWSER_CHROME_MANIFESTS += [
+    'test/browser/browser.ini',
+]
+
 MOCHITEST_MANIFESTS += [
     'test/mochitest/mochitest-remote.ini',
     'test/mochitest/mochitest.ini'
@@ -42,5 +49,6 @@ MOCHITEST_MANIFESTS += [
 MOCHITEST_CHROME_MANIFESTS += ['test/mochitest/chrome.ini']
 XPCSHELL_TESTS_MANIFESTS += [
     'test/xpcshell/native_messaging.ini',
+    'test/xpcshell/xpcshell-remote.ini',
     'test/xpcshell/xpcshell.ini',
 ]

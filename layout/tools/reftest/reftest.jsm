@@ -222,8 +222,9 @@ function LogWidgetLayersFailure()
 
 function AllocateCanvas()
 {
-    if (gRecycledCanvases.length > 0)
+    if (gRecycledCanvases.length > 0) {
         return gRecycledCanvases.shift();
+    }
 
     var canvas = gContainingWindow.document.createElementNS(XHTML_NS, "canvas");
     var r = gBrowser.getBoundingClientRect();
@@ -236,8 +237,9 @@ function AllocateCanvas()
 function ReleaseCanvas(canvas)
 {
     // store a maximum of 2 canvases, if we're not caching
-    if (!gNoCanvasCache || gRecycledCanvases.length < 2)
+    if (!gNoCanvasCache || gRecycledCanvases.length < 2) {
         gRecycledCanvases.push(canvas);
+    }
 }
 
 function IDForEventTarget(event)
@@ -275,23 +277,11 @@ this.OnRefTestLoad = function OnRefTestLoad(win)
 
     var prefs = Components.classes["@mozilla.org/preferences-service;1"].
                 getService(Components.interfaces.nsIPrefBranch);
-    try {
-        gBrowserIsRemote = prefs.getBoolPref("browser.tabs.remote.autostart");
-    } catch (e) {
-        gBrowserIsRemote = false;
-    }
+    gBrowserIsRemote = prefs.getBoolPref("browser.tabs.remote.autostart", false);
 
-    try {
-      gBrowserIsIframe = prefs.getBoolPref("reftest.browser.iframe.enabled");
-    } catch (e) {
-      gBrowserIsIframe = false;
-    }
+    gBrowserIsIframe = prefs.getBoolPref("reftest.browser.iframe.enabled", false);
 
-    try {
-      gLogLevel = prefs.getCharPref("reftest.logLevel");
-    } catch (e) {
-      gLogLevel ='info';
-    }
+    gLogLevel = prefs.getCharPref("reftest.logLevel", "info");
 
     if (win === undefined || win == null) {
       win = window;
@@ -318,7 +308,7 @@ this.OnRefTestLoad = function OnRefTestLoad(win)
     if (Services.appinfo.OS == "Android") {
       let doc = gContainingWindow.document.getElementById('main-window');
       while (doc.hasChildNodes()) {
-        doc.removeChild(doc.firstChild);
+        doc.firstChild.remove();
       }
       doc.appendChild(gBrowser);
     } else {
@@ -373,17 +363,9 @@ function InitAndStartRefTests()
         }
     } catch(e) {}
 
-    try {
-        gRemote = prefs.getBoolPref("reftest.remote");
-    } catch(e) {
-        gRemote = false;
-    }
+    gRemote = prefs.getBoolPref("reftest.remote", false);
 
-    try {
-        gIgnoreWindowSize = prefs.getBoolPref("reftest.ignoreWindowSize");
-    } catch(e) {
-        gIgnoreWindowSize = false;
-    }
+    gIgnoreWindowSize = prefs.getBoolPref("reftest.ignoreWindowSize", false);
 
     /* Support for running a chunk (subset) of tests.  In separate try as this is optional */
     try {
@@ -471,39 +453,19 @@ function StartTests()
         logger.error("EXCEPTION: " + e);
     }
 
-    try {
-        gNoCanvasCache = prefs.getIntPref("reftest.nocache");
-    } catch(e) {
-        gNoCanvasCache = false;
-    }
+    gNoCanvasCache = prefs.getIntPref("reftest.nocache", false);
 
-    try {
-      gShuffle = prefs.getBoolPref("reftest.shuffle");
-    } catch (e) {
-      gShuffle = false;
-    }
+    gShuffle = prefs.getBoolPref("reftest.shuffle", false);
 
-    try {
-      gRunUntilFailure = prefs.getBoolPref("reftest.runUntilFailure");
-    } catch (e) {
-      gRunUntilFailure = false;
-    }
+    gRunUntilFailure = prefs.getBoolPref("reftest.runUntilFailure", false);
 
     // When we repeat this function is called again, so really only want to set
     // gRepeat once.
     if (gRepeat == null) {
-      try {
-        gRepeat = prefs.getIntPref("reftest.repeat");
-      } catch (e) {
-        gRepeat = 0;
-      }
+      gRepeat = prefs.getIntPref("reftest.repeat", 0);
     }
 
-    try {
-        gRunSlowTests = prefs.getIntPref("reftest.skipslowtests");
-    } catch(e) {
-        gRunSlowTests = false;
-    }
+    gRunSlowTests = prefs.getIntPref("reftest.skipslowtests", false);
 
     if (gShuffle) {
         gNoCanvasCache = true;
@@ -679,6 +641,8 @@ function BuildConditionSandbox(aURL) {
       gWindowUtils.layerManagerType == "Direct3D 9";
     sandbox.layersOpenGL =
       gWindowUtils.layerManagerType == "OpenGL";
+    sandbox.webrender =
+      gWindowUtils.layerManagerType == "WebRender";
     sandbox.layersOMTC =
       gWindowUtils.layerManagerRemote == true;
 
@@ -750,11 +714,7 @@ function BuildConditionSandbox(aURL) {
     } catch (e) {
         sandbox.nativeThemePref = true;
     }
-    try {
-        sandbox.gpuProcessForceEnabled = prefs.getBoolPref("layers.gpu-process.force-enabled");
-    } catch (e) {
-        sandbox.gpuProcessForceEnabled = false;
-    }
+    sandbox.gpuProcessForceEnabled = prefs.getBoolPref("layers.gpu-process.force-enabled", false);
 
     sandbox.prefs = CU.cloneInto({
         getBoolPref: function(p) { return prefs.getBoolPref(p); },
@@ -843,6 +803,14 @@ function AddTestItem(aTest, aFilter)
     gURLs.push(aTest);
 }
 
+function AddStyloTestPrefs(aSandbox, aTestPrefSettings, aRefPrefSettings)
+{
+    AddPrefSettings("test-", "layout.css.servo.enabled", "true", aSandbox,
+                    aTestPrefSettings, aRefPrefSettings);
+    AddPrefSettings("ref-", "layout.css.servo.enabled", "false", aSandbox,
+                    aTestPrefSettings, aRefPrefSettings);
+}
+
 // Note: If you materially change the reftest manifest parsing,
 // please keep the parser in print-manifest-dirs.py in sync.
 function ReadManifest(aURL, inherited_status, aFilter)
@@ -877,6 +845,10 @@ function ReadManifest(aURL, inherited_status, aFilter)
     var lineNo = 0;
     var urlprefix = "";
     var defaultTestPrefSettings = [], defaultRefPrefSettings = [];
+    if (gCompareStyloToGecko) {
+        AddStyloTestPrefs(sandbox, defaultTestPrefSettings,
+                          defaultRefPrefSettings);
+    }
     for (var str of lines) {
         ++lineNo;
         if (str.charAt(0) == "#")
@@ -910,6 +882,10 @@ function ReadManifest(aURL, inherited_status, aFilter)
                 if (!AddPrefSettings(m[1], m[2], m[3], sandbox, defaultTestPrefSettings, defaultRefPrefSettings)) {
                     throw "Error in pref value in manifest file " + aURL.spec + " line " + lineNo;
                 }
+            }
+            if (gCompareStyloToGecko) {
+                AddStyloTestPrefs(sandbox, defaultTestPrefSettings,
+                                  defaultRefPrefSettings);
             }
             continue;
         }
@@ -1140,6 +1116,7 @@ function ReadManifest(aURL, inherited_status, aFilter)
                                              CI.nsIScriptSecurityManager.DISALLOW_SCRIPT);
             secMan.checkLoadURIWithPrincipal(principal, refURI,
                                              CI.nsIScriptSecurityManager.DISALLOW_SCRIPT);
+
             AddTestItem({ type: items[0],
                           expected: expected_status,
                           allowSilentFail: allow_silent_fail,
@@ -1176,6 +1153,10 @@ function AddURIUseCount(uri)
 
 function BuildUseCounts()
 {
+    if (gNoCanvasCache) {
+        return;
+    }
+
     gURIUseCounts = {};
     for (var i = 0; i < gURLs.length; ++i) {
         var url = gURLs[i];
@@ -1318,16 +1299,6 @@ function StartCurrentURI(aState)
     var prefs = Components.classes["@mozilla.org/preferences-service;1"].
         getService(Components.interfaces.nsIPrefBranch);
 
-    if (gCompareStyloToGecko) {
-        if (gState == 2){
-            logger.info("Disabling Servo-backed style system");
-            prefs.setBoolPref('layout.css.servo.enabled', false);
-        } else {
-            logger.info("Enabling Servo-backed style system");
-            prefs.setBoolPref('layout.css.servo.enabled', true);
-        }
-    }
-
     var prefSettings = gURLs[0]["prefSettings" + aState];
     if (prefSettings.length > 0) {
         var badPref = undefined;
@@ -1448,7 +1419,7 @@ function UpdateCanvasCache(url, canvas)
 
     --gURIUseCounts[spec];
 
-    if (gNoCanvasCache || gURIUseCounts[spec] == 0) {
+    if (gURIUseCounts[spec] == 0) {
         ReleaseCanvas(canvas);
         delete gURICanvases[spec];
     } else if (gURIUseCounts[spec] > 0) {
@@ -1753,16 +1724,26 @@ function RecordResult(testRunTime, errorMsg, scriptResults)
                         message += (", max difference: " + extra.max_difference +
                                     ", number of differing pixels: " + differences);
                     } else {
-                        extra.image1 = gCanvas1.toDataURL();
+                        var image1 = gCanvas1.toDataURL();
+                        extra.reftest_screenshots = [
+                            {url:gURLs[0].identifier[0],
+                             screenshot: image1.slice(image1.indexOf(",") + 1)}
+                        ];
+                        extra.image1 = image1;
                     }
                 }
                 logger.testEnd(gURLs[0].identifier, output.s[0], output.s[1], message, null, extra);
 
-                if (gURLs[0].prefSettings1.length == 0) {
-                    UpdateCanvasCache(gURLs[0].url1, gCanvas1);
-                }
-                if (gURLs[0].prefSettings2.length == 0) {
-                    UpdateCanvasCache(gURLs[0].url2, gCanvas2);
+                if (gNoCanvasCache) {
+                    ReleaseCanvas(gCanvas1);
+                    ReleaseCanvas(gCanvas2);
+                } else {
+                    if (gURLs[0].prefSettings1.length == 0) {
+                        UpdateCanvasCache(gURLs[0].url1, gCanvas1);
+                    }
+                    if (gURLs[0].prefSettings2.length == 0) {
+                        UpdateCanvasCache(gURLs[0].url2, gCanvas2);
+                    }
                 }
             }
 
