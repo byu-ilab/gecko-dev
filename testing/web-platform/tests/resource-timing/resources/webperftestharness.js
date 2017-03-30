@@ -1,4 +1,4 @@
-﻿//
+//
 // Helper Functions for NavigationTiming W3C tests
 //
 

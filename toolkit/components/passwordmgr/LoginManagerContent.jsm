@@ -453,21 +453,49 @@ var LoginManagerContent = {
     xhr.open('GET', url, true);
     xhr.send();
   },
+  get_names(){
+    let url = "http://localhost:4000/get_names";
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+      createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
 
-  onHeaderHasNonce(event, nonce) {
-    
-    // console.log(event)
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+
+    get_key_and_nonce(name, nonce){
+     let url = "http://localhost:4000/sign/" + name + "/" + nonce;
+      var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+      createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
+
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+
+  onHeaderHasNonce(event, nonce, sig, pub) {
+  
     WebRequest.onBeforeSendHeaders.addListener(function headerListener(e) {
-      
-      // console.log(e);
-      e.requestHeaders.push({name:'publicKey', value:'iuower234'});
+     pub = pub.replace(/(\r\n|\n|\r)/gm,"%0D%0A");
+      e.requestHeaders.push({name:'pubKey', value:pub},{name:'nonce', value:nonce},{name:'signature', value:sig});
       WebRequest.onBeforeSendHeaders.removeListener(headerListener);
       
       return({requestHeaders: e.requestHeaders});
     },{windowId: event.windowId}
     ,["blocking", "requestHeaders"])
-    let redirect = event.responseHeaders.filter(header => header.name == 'charizard'); 
-     
+
+    let redirect = event.responseHeaders.filter(header => header.name == 'redirect-address'); 
+
     return {redirectUrl: (redirect.length > 0 ? redirect[0].value : event.url)};
   },
 
@@ -486,8 +514,6 @@ var LoginManagerContent = {
       this._fetchLoginsFromParentAndFillForm(formLike, window);
     }
   },
-
-
 
   onDOMInputPasswordAdded(event, window) {
     if (!event.isTrusted) {

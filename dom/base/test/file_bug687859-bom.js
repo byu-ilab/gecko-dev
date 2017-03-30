@@ -1,1 +1,1 @@
-﻿var stringFromBomScript = "€";
+var stringFromBomScript = "€";

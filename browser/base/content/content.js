@@ -73,7 +73,6 @@ addMessageListener("RemoteLogins:fillForm", function(message) {
   LoginManagerContent.receiveMessage(message, content);
 });
 addEventListener("DOMFormHasPassword", function(event) {
-  debugger;
   LoginManagerContent.onDOMFormHasPassword(event, content);
   let formLike = LoginFormFactory.createFromForm(event.target);
   InsecurePasswordUtils.reportInsecurePasswords(formLike);
@@ -94,10 +93,31 @@ addEventListener("blur", function(event) {
 });
 WebRequest.onHeadersReceived.addListener(function(event) {
   let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
+  let redirect = "";
+  console.log(event);                              
   if(nonce.length > 0) {
-    return LoginManagerContent.onHeaderHasNonce(event, nonce[0].value)
+      var prompts = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+                              .getService(Components.interfaces.nsIPromptService);
+
+      var test = LoginManagerContent.get_names();
+      var res = test.split(" ");
+
+      var selected = {};
+
+      var result = prompts.select(null, "Key Selection", "This site supports login with a public key. Select a key to login with.", res.length,
+                                  res, selected);
+      if(result){
+        var name = res[selected.value];
+        var n = nonce[0].value;
+        var key_and_nonce = LoginManagerContent.get_key_and_nonce(name, n);
+        var json = JSON.parse(key_and_nonce);
+        var sig = json["sig"];
+        var pub = json["pub"];
+
+        redirect = LoginManagerContent.onHeaderHasNonce(event, n, sig, pub);
+        return redirect;
+      }
   }
-  
 },
 {types: ["main_frame"]},
 ["responseHeaders", "blocking"])
@@ -404,7 +424,7 @@ var AboutNetAndCertErrorListener = {
     content.dispatchEvent(new content.CustomEvent("AboutNetErrorCaptivePortalFreed"));
   },
 
-  handleEvent(aEvent) {
+   handleEvent(aEvent) {
     if (!this.isAboutNetError && !this.isAboutCertError) {
       return;
     }
