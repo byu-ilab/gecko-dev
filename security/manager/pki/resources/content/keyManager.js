@@ -492,6 +492,23 @@ function addCACerts()
   }
 }
 
+function addKey()
+{
+  var bundle = document.getElementById("pippki_bundle");
+  var fp = Components.classes[nsFilePicker].createInstance(nsIFilePicker);
+  fp.init(window,
+          bundle.getString("importCACertsPrompt"),
+          nsIFilePicker.modeOpen);
+  fp.appendFilter(bundle.getString("file_browse_Certificate_spec"),
+                  gCertFileTypes);
+  fp.appendFilters(nsIFilePicker.filterAll);
+  if (fp.show() == nsIFilePicker.returnOK) {
+    certdb.importCertsFromFile(fp.file, nsIX509Cert.CA_CERT);
+    caTreeView.loadCerts(nsIX509Cert.CA_CERT);
+    caTreeView.selection.clearSelection();
+  }
+}
+
 function onSmartCardChange()
 {
   var certcache = certdb.getCerts();

@@ -442,6 +442,10 @@
                 flex="1"
                 label="&viewKeys.label;"
                 accesskey="&viewKeys.accesskey;"/>
+        <button id="addKeyButton"
+                flex="1"
+                label="&addKey.label;"
+                accesskey="&addKey.accesskey;"/>
         <hbox flex="10"/>
       </hbox>
     </tabpanel>
