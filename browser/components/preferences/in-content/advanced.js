@@ -102,6 +102,11 @@ var gAdvancedPane = {
     }
     setEventListener("viewCertificatesButton", "command",
                      gAdvancedPane.showCertificates);
+
+
+    setEventListener("viewKeysButton", "command",
+                     gAdvancedPane.showKeys);
+
     setEventListener("viewSecurityDevicesButton", "command",
                      gAdvancedPane.showSecurityDevices);
     setEventListener("cacheSize", "change",
@@ -771,6 +776,11 @@ var gAdvancedPane = {
    */
   showCertificates() {
     gSubDialog.open("chrome://pippki/content/certManager.xul");
+  },
+
+
+  showKeys() {
+    gSubDialog.open("chrome://pippki/content/keyManager.xul");
   },
 
   /**

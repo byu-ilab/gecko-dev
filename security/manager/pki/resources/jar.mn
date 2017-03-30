@@ -12,6 +12,8 @@ pippki.jar:
     content/pippki/certDump.xul              (content/certDump.xul)
     content/pippki/certManager.js            (content/certManager.js)
     content/pippki/certManager.xul           (content/certManager.xul)
+    content/pippki/keyManager.js             (content/keyManager.js)
+    content/pippki/keyManager.xul            (content/keyManager.xul)
     content/pippki/certViewer.js             (content/certViewer.js)
     content/pippki/certViewer.xul            (content/certViewer.xul)
     content/pippki/changepassword.js         (content/changepassword.js)

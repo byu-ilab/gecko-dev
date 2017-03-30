@@ -123,5 +123,9 @@
 <!ENTITY enableOCSP.accesskey            "Q">
 <!ENTITY viewCerts.label                 "View Certificates">
 <!ENTITY viewCerts.accesskey             "C">
+
+<!ENTITY keyTab.label            "Keys">
+<!ENTITY viewKeys.label                 "Manage Keys">
+<!ENTITY viewKeys.accesskey             "K">
 <!ENTITY viewSecurityDevices.label       "Security Devices">
 <!ENTITY viewSecurityDevices.accesskey   "D">
