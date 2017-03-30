@@ -4,14 +4,9 @@
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
 <?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<?xul-overlay href="chrome://pippki/content/KeyOverlay.xul"?>
 
-<?xul-overlay href="chrome://pippki/content/MineOverlay.xul"?>
-<?xul-overlay href="chrome://pippki/content/OthersOverlay.xul"?>
-<?xul-overlay href="chrome://pippki/content/WebSitesOverlay.xul"?>
-<?xul-overlay href="chrome://pippki/content/CAOverlay.xul"?>
-<?xul-overlay href="chrome://pippki/content/OrphanOverlay.xul"?>
-
-<!DOCTYPE dialog SYSTEM "chrome://pippki/locale/certManager.dtd">
+<!DOCTYPE dialog SYSTEM "chrome://pippki/locale/keyManager.dtd">
 
 <dialog id="certmanager"
 	windowtype="mozilla:certmanager"

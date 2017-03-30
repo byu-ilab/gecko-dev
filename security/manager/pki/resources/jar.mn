@@ -5,6 +5,7 @@
 pippki.jar:
 % content pippki %content/pippki/
     content/pippki/CAOverlay.xul             (content/CAOverlay.xul)
+    content/pippki/KeyOverlay.xul            (content/KeyOverlay.xul)
     content/pippki/MineOverlay.xul           (content/MineOverlay.xul)
     content/pippki/OrphanOverlay.xul         (content/OrphanOverlay.xul)
     content/pippki/OthersOverlay.xul         (content/OthersOverlay.xul)
