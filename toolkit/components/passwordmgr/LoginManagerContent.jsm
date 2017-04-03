@@ -483,11 +483,11 @@ var LoginManagerContent = {
     }
   },
 
-  onHeaderHasNonce(event, nonce, sig, pub) {
+  onHeaderHasNonce(event, nonce, sig, pub, uname) {
   
     WebRequest.onBeforeSendHeaders.addListener(function headerListener(e) {
      pub = pub.replace(/(\r\n|\n|\r)/gm,"%0D%0A");
-      e.requestHeaders.push({name:'pubKey', value:pub},{name:'nonce', value:nonce},{name:'signature', value:sig});
+      e.requestHeaders.push({name:'pubKey', value:pub},{name:'nonce', value:nonce},{name:'signature', value:sig},{name:'kusername', value:uname});
       WebRequest.onBeforeSendHeaders.removeListener(headerListener);
       
       return({requestHeaders: e.requestHeaders});

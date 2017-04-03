@@ -94,7 +94,8 @@ addEventListener("blur", function(event) {
 WebRequest.onHeadersReceived.addListener(function(event) {
   let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
   let redirect = "";
-  console.log(event);                              
+  console.log(event.responseHeaders.length);   
+                             
   if(nonce.length > 0) {
       var prompts = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
                               .getService(Components.interfaces.nsIPromptService);
@@ -114,7 +115,7 @@ WebRequest.onHeadersReceived.addListener(function(event) {
         var sig = json["sig"];
         var pub = json["pub"];
 
-        redirect = LoginManagerContent.onHeaderHasNonce(event, n, sig, pub);
+        redirect = LoginManagerContent.onHeaderHasNonce(event, n, sig, pub, name);
         return redirect;
       }
   }
