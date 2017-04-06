@@ -145,6 +145,7 @@
     <tab id="networkTab" label="&networkTab.label;"/>
     <tab id="updateTab" label="&updateTab.label;"/>
     <tab id="encryptionTab" label="&certificateTab.label;"/>
+    <tab id="keyTab" label="&keyTab.label;"/>
   </tabs>
 
   <tabpanels flex="1">
@@ -417,5 +418,22 @@
         <hbox flex="10"/>
       </hbox>
     </tabpanel>
+
+         <!-- Keys -->
+    <tabpanel id="keyPanel" orient="vertical">
+      <hbox>
+        <button id="viewKeysButton"
+                flex="1"
+                label="&viewKeys.label;"
+                accesskey="&viewKeys.accesskey;"/>
+        <button id="addKeyButton"
+                flex="1"
+                label="&addKey.label;"
+                accesskey="&addKey.accesskey;"/>
+        <hbox flex="10"/>
+      </hbox>
+    </tabpanel>
+
+    
   </tabpanels>
 </tabbox>

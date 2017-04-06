@@ -82,6 +82,13 @@ var gAdvancedPane = {
       setEventListener("showUpdateHistory", "command",
                        gAdvancedPane.showUpdates);
     }
+
+    setEventListener("viewKeysButton", "command",
+                     gAdvancedPane.showKeys);
+
+    setEventListener("addKeyButton", "command",
+                     gAdvancedPane.addKey);
+
     setEventListener("viewCertificatesButton", "command",
                      gAdvancedPane.showCertificates);
     setEventListener("viewSecurityDevicesButton", "command",
@@ -750,6 +757,76 @@ var gAdvancedPane = {
     gSubDialog.open("chrome://pippki/content/certManager.xul");
   },
 
+get_names(){
+    let url = "http://localhost:4000/get_names";
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+      createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
+
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+
+  get_key(name){
+    let url = "http://localhost:4000/get_key/" + name;
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+      createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
+
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+
+  create_key(name){
+    let url = "http://localhost:4000/create_key/" + name;
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+      createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
+
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+
+  addKey(){
+    var sign = prompt("What would you like to name your key?");
+    var test = this.create_key(sign);
+    window.alert(test);
+  },
+
+  showKeys() {
+    var prompts = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+                              .getService(Components.interfaces.nsIPromptService);
+
+      var test = this.get_names();
+      var res = test.split(" ");
+
+      var selected = {};
+
+      var result = prompts.select(null, "Your Keys", "These are your stored keys. Select a key to view.", res.length,
+                                  res, selected);
+      if(result){
+        var name = res[selected.value];
+        var key = this.get_key(name);
+        window.alert(key);
+      }    
+    //gSubDialog.open("chrome://pippki/content/keyManager.xul");
+  },
+  
   /**
    * Displays a dialog from which the user can manage his security devices.
    */

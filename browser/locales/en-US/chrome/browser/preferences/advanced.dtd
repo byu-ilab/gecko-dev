@@ -117,3 +117,10 @@
 <!ENTITY viewCerts.accesskey             "C">
 <!ENTITY viewSecurityDevices.label       "Security Devices">
 <!ENTITY viewSecurityDevices.accesskey   "D">
+
+
+<!ENTITY keyTab.label            "Keys">
+<!ENTITY viewKeys.label                 "View Keys">
+<!ENTITY viewKeys.accesskey             "K">
+<!ENTITY addKey.label                 "Add a Key">
+<!ENTITY addKey.accesskey             "A">
