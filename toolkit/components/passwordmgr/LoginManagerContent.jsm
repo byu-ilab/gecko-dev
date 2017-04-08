@@ -420,7 +420,7 @@ var LoginManagerContent = {
                               
   //Prompt for selection of key
     
-    let url = "http://localhost:4000/get_names";
+    let url = "http://localhost:4000/get-names";
     var self = this;
 
     xhr.onreadystatechange = function() {
@@ -491,7 +491,7 @@ var LoginManagerContent = {
     xhr.send();
   },
   get_names(){
-    let url = "http://localhost:4000/get_names";
+    let url = "http://localhost:4000/get-names";
     var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
       createInstance(Components.interfaces.nsIXMLHttpRequest);
     xhr.open('GET', url, false);  // `false` makes the request synchronous
@@ -523,7 +523,8 @@ var LoginManagerContent = {
   onHeaderHasNonce(event, nonce, sig, pub, uname) {
   
     WebRequest.onBeforeSendHeaders.addListener(function headerListener(e) {
-     pub = pub.replace(/(\r\n|\n|\r)/gm,"%0D%0A");
+     //pub = pub.replace(/(\r\n|\n|\r)/gm,"%0D%0A");
+     pub = btoa(pub);
       e.requestHeaders.push({name:'pubKey', value:pub},{name:'nonce', value:nonce},{name:'signature', value:sig},{name:'kusername', value:uname});
       WebRequest.onBeforeSendHeaders.removeListener(headerListener);
       
@@ -545,13 +546,13 @@ var LoginManagerContent = {
     let form = event.target;
     let formLike = LoginFormFactory.createFromForm(form);
     log("onDOMFormHasPassword:", form, formLike);
-    if(this.checkForPublicKey(window)){
+    /*if(this.checkForPublicKey(window)){
       var name = this.prompt_name(window)
       //this.webTest(window, name);
     }
-    else{
+    else{*/
       this._fetchLoginsFromParentAndFillForm(formLike, window);
-    }
+    //}
   },
 
   onDOMInputPasswordAdded(event, window) {

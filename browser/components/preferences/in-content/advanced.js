@@ -758,7 +758,7 @@ var gAdvancedPane = {
   },
 
 get_names(){
-    let url = "http://localhost:4000/get_names";
+    let url = "http://localhost:4000/get-names";
     var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
       createInstance(Components.interfaces.nsIXMLHttpRequest);
     xhr.open('GET', url, false);  // `false` makes the request synchronous
@@ -773,7 +773,7 @@ get_names(){
   },
 
   get_key(name){
-    let url = "http://localhost:4000/get_key/" + name;
+    let url = "http://localhost:4000/get-key/" + name;
     var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
       createInstance(Components.interfaces.nsIXMLHttpRequest);
     xhr.open('GET', url, false);  // `false` makes the request synchronous
@@ -788,7 +788,7 @@ get_names(){
   },
 
   create_key(name){
-    let url = "http://localhost:4000/create_key/" + name;
+    let url = "http://localhost:4000/create-key/" + name;
     var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
       createInstance(Components.interfaces.nsIXMLHttpRequest);
     xhr.open('GET', url, false);  // `false` makes the request synchronous
