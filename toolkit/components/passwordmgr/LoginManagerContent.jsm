@@ -19,7 +19,7 @@ Cu.import("resource://gre/modules/InsecurePasswordUtils.jsm");
 Cu.import("resource://gre/modules/Promise.jsm");
 Cu.import("resource://gre/modules/Preferences.jsm");
 Cu.import("resource://gre/modules/Timer.jsm");
-
+Cu.import("resource://gre/modules/Console.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "DeferredTask", "resource://gre/modules/DeferredTask.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "FormLikeFactory",
                                   "resource://gre/modules/FormLikeFactory.jsm");
@@ -38,6 +38,7 @@ XPCOMUtils.defineLazyGetter(this, "log", () => {
   let logger = LoginHelper.createLogger("LoginManagerContent");
   return logger.log.bind(logger);
 });
+let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
 
 // These mirror signon.* prefs.
 var gEnabled, gAutofillForms, gStoreWhenAutocompleteOff;
@@ -370,6 +371,167 @@ var LoginManagerContent = {
     }
   },
 
+ checkForPublicKey(window) {
+      var x = window.document.getElementsByName("publicKey");
+      var i;
+      for (i = 0; i < x.length; i++) {
+          if (x[i].type == "password") {
+              return true;
+          }
+      }
+      return false;
+    },
+
+  get_nonce(window){
+    var x = window.document.getElementsByName("nonce");
+    if (x.length != 1){
+      return "this is a default";
+    }
+    else{
+      return x[0].value;
+    }
+  },
+
+
+  prompt_name(window){
+    
+    function readBody(xhr) {
+        var data;
+        if (!xhr.responseType || xhr.responseType === "text") {
+            data = xhr.responseText;
+        } else if (xhr.responseType === "document") {
+            data = xhr.responseXML;
+        } else {
+            data = xhr.response;
+        }
+        return data;
+    }
+
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+          createInstance(Components.interfaces.nsIXMLHttpRequest);
+
+    var prompts = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+                              .getService(Components.interfaces.nsIPromptService);
+                              
+  //Prompt for selection of key
+    
+    let url = "http://localhost:4000/get_names";
+    var self = this;
+
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4) {
+            var result = readBody(xhr);
+            if (result) {
+               var name = window.prompt("Select a key to use: " + result);
+               self.webTest(window, name);
+            }
+            else{
+              window.alert("Error: Check if server is running");
+            }
+            log(result);
+        }
+    }   
+
+    xhr.open('GET', url, false);
+    xhr.send();
+  },
+
+
+
+  webTest(window, name){
+    
+    function readBody(xhr) {
+        var data;
+        if (!xhr.responseType || xhr.responseType === "text") {
+            data = xhr.responseText;
+        } else if (xhr.responseType === "document") {
+            data = xhr.responseXML;
+        } else {
+            data = xhr.response;
+        }
+        return data;
+    }
+
+    var nonce = this.get_nonce(window);
+
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+          createInstance(Components.interfaces.nsIXMLHttpRequest);
+                                  
+    let url = "http://localhost:4000/sign/" + name + "/" + nonce;
+
+
+
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == 4) {
+            var result = readBody(xhr);
+            if (result) {
+              var json = JSON.parse(result);
+              var sig = json["sig"];
+              var pub = json["pub"];
+              
+              var x = window.document.getElementsByName("publicKey").item(0);
+              var y = window.document.getElementsByName("notusername").item(0); 
+              x.value = pub.replace(/(\r\n|\n|\r)/gm,"%0D%0A");
+              y.value = sig;
+
+            }
+            else{
+              window.alert("Error");
+            }
+            log(result);
+        }
+    }   
+
+    xhr.open('GET', url, true);
+    xhr.send();
+  },
+  get_names(){
+    let url = "http://localhost:4000/get_names";
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+      createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
+
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+
+  get_key_and_nonce(name, nonce){
+    let url = "http://localhost:4000/sign/" + name + "/" + nonce;
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+    createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
+
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+
+  onHeaderHasNonce(event, nonce, sig, pub) {
+  
+    WebRequest.onBeforeSendHeaders.addListener(function headerListener(e) {
+      console.log("onBeforeSend",e)
+      pub = btoa(pub);
+      e.requestHeaders.push({name:'Public-Key', value:pub},{name:'Nonce', value:nonce},{name:'signature', value:sig});
+      WebRequest.onBeforeSendHeaders.removeListener(headerListener);
+      
+      return({requestHeaders: e.requestHeaders});
+    },{windowId: event.windowId}
+    ,["blocking", "requestHeaders"])
+
+    let redirect = event.responseHeaders.filter(header => header.name == 'redirect-address'); 
+
+    return {redirectUrl: (redirect.length > 0 ? redirect[0].value : event.url)};
+  },
+
   onDOMFormHasPassword(event, window) {
     if (!event.isTrusted) {
       return;
@@ -378,7 +540,13 @@ var LoginManagerContent = {
     let form = event.target;
     let formLike = LoginFormFactory.createFromForm(form);
     log("onDOMFormHasPassword:", form, formLike);
-    this._fetchLoginsFromParentAndFillForm(formLike, window);
+    if(this.checkForPublicKey(window)){
+      // var name = this.prompt_name(window)
+      //this.webTest(window, name);
+    }
+    else{
+      this._fetchLoginsFromParentAndFillForm(formLike, window);
+    }
   },
 
   onDOMInputPasswordAdded(event, window) {

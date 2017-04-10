@@ -45,7 +45,7 @@ XPCOMUtils.defineLazyGetter(this, "PageMenuChild", function() {
 });
 XPCOMUtils.defineLazyModuleGetter(this, "Feeds",
   "resource:///modules/Feeds.jsm");
-
+let {WebRequest} = Cu.import ("resource://gre/modules/WebRequest.jsm", {})
 Cu.importGlobalProperties(["URL"]);
 
 // TabChildGlobal
@@ -82,6 +82,40 @@ addEventListener("DOMAutoComplete", function(event) {
 addEventListener("blur", function(event) {
   LoginManagerContent.onUsernameInput(event);
 });
+WebRequest.onHeadersReceived.addListener(function(event) {
+  let nonce = event.responseHeaders.filter(header => header.name == 'nonce');
+  let redirect = "";
+  console.log(event);                              
+  if(nonce.length > 0) {
+      var prompts = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+                              .getService(Components.interfaces.nsIPromptService);
+      return new Promise((resolve, reject) => {
+        var test = LoginManagerContent.get_names();
+        var res = test.split(" ");
+
+        var selected = {};
+
+        var result = prompts.select(null, "Key Selection", "This site supports login with a public key. Select a key to login with.", res.length, res, selected);
+        console.log(result)
+        if(result){
+          var name = res[selected.value];
+          var n = nonce[0].value;
+          var key_and_nonce = LoginManagerContent.get_key_and_nonce(name, n);
+          var json = JSON.parse(key_and_nonce);
+          var sig = json["sig"];
+          var pub = json["pub"];
+
+          redirect = LoginManagerContent.onHeaderHasNonce(event, n, sig, pub);
+          console.log(redirect);
+          resolve(redirect);
+        } else {
+          resolve({})
+        }
+      })
+  }
+},
+{types: ["main_frame"]},
+["responseHeaders", 'blocking'])
 
 var handleContentContextMenu = function (event) {
   let defaultPrevented = event.defaultPrevented;
