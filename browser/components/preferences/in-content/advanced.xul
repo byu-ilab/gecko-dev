@@ -429,6 +429,10 @@
                 flex="1"
                 label="&addKey.label;"
                 accesskey="&addKey.accesskey;"/>
+        <button id="removeKeyButton"
+                flex="1"
+                label="&removeKey.label;"
+                accesskey="&removeKey.accesskey;"/>
         <hbox flex="10"/>
       </hbox>
     </tabpanel>

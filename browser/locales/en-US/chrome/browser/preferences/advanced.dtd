@@ -120,5 +120,7 @@
 <!ENTITY viewKeys.accesskey              "K">
 <!ENTITY addKey.label                    "Add a Key">
 <!ENTITY addKey.accesskey                "A">
+<!ENTITY removeKey.label                 "Remove a Key">
+<!ENTITY removeKey.accesskey             "R">
 <!ENTITY viewSecurityDevices.label       "Security Devices">
 <!ENTITY viewSecurityDevices.accesskey   "D">

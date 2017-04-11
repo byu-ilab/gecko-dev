@@ -88,6 +88,8 @@ var gAdvancedPane = {
                      gAdvancedPane.showKeys);
     setEventListener("addKeyButton", "command",
                      gAdvancedPane.addKey);
+    setEventListener("removeKeyButton", "command",
+                     gAdvancedPane.removeKey);
     setEventListener("viewSecurityDevicesButton", "command",
                      gAdvancedPane.showSecurityDevices);
     setEventListener("cacheSize", "change",
@@ -754,7 +756,7 @@ var gAdvancedPane = {
     gSubDialog.open("chrome://pippki/content/certManager.xul");
   },
   createKey(name){
-    let url = "http://localhost:4000/create_key/" + name;
+    let url = "http://localhost:4000/create-key/" + name;
     var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
       createInstance(Components.interfaces.nsIXMLHttpRequest);
     xhr.open('GET', url, false);  // `false` makes the request synchronous
@@ -768,7 +770,7 @@ var gAdvancedPane = {
     }
   },
   getNames(){
-    let url = "http://localhost:4000/get_names";
+    let url = "http://localhost:4000/get-names";
     var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
       createInstance(Components.interfaces.nsIXMLHttpRequest);
     xhr.open('GET', url, false);  // `false` makes the request synchronous
@@ -782,7 +784,21 @@ var gAdvancedPane = {
     }
   },
   getKey(name){
-    let url = "http://localhost:4000/get_key/" + name;
+    let url = "http://localhost:4000/get-key/" + name;
+    var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
+      createInstance(Components.interfaces.nsIXMLHttpRequest);
+    xhr.open('GET', url, false);  // `false` makes the request synchronous
+    xhr.send(null);
+
+    if (xhr.status === 200) {
+      return xhr.responseText;
+    }
+    else{
+      return "error"
+    }
+  },
+  removeThisKey(name){
+    let url = "http://localhost:4000/remove-key/" + name;
     var xhr = Components.classes['@mozilla.org/xmlextras/xmlhttprequest;1'].
       createInstance(Components.interfaces.nsIXMLHttpRequest);
     xhr.open('GET', url, false);  // `false` makes the request synchronous
@@ -799,6 +815,23 @@ var gAdvancedPane = {
     var sign = prompt("What would you like to name your key?");
     var test = this.createKey(sign);
     window.alert(test);
+  },
+  removeKey(){
+    var prompts = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
+                              .getService(Components.interfaces.nsIPromptService);
+
+      var test = this.getNames();
+      var res = test.split(" ");
+
+      var selected = {};
+
+      var result = prompts.select(null, "Your Keys", "These are your stored keys. Select a key to remove.", res.length,
+                                  res, selected);
+      if(result){
+        var name = res[selected.value];
+        var msg = this.removeThisKey(name);
+        window.alert(msg);
+      }    
   },
 
   showKeys() {
