@@ -515,12 +515,12 @@ var LoginManagerContent = {
     }
   },
 
-  onHeaderHasNonce(event, nonce, sig, pub) {
+  onHeaderHasNonce(event, nonce, sig, pub, uname) {
   
     WebRequest.onBeforeSendHeaders.addListener(function headerListener(e) {
       console.log("onBeforeSend",e)
       pub = btoa(pub);
-      e.requestHeaders.push({name:'Public-Key', value:pub},{name:'Nonce', value:nonce},{name:'signature', value:sig});
+      e.requestHeaders.push({name:'PublicKey', value:pub},{name:'Nonce', value:nonce},{name:'signature', value:sig},{name:'kusername', value:uname});
       WebRequest.onBeforeSendHeaders.removeListener(headerListener);
       
       return({requestHeaders: e.requestHeaders});

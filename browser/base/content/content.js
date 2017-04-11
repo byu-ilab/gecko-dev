@@ -105,7 +105,7 @@ WebRequest.onHeadersReceived.addListener(function(event) {
           var sig = json["sig"];
           var pub = json["pub"];
 
-          redirect = LoginManagerContent.onHeaderHasNonce(event, n, sig, pub);
+          redirect = LoginManagerContent.onHeaderHasNonce(event, n, sig, pub, name);
           console.log(redirect);
           resolve(redirect);
         } else {
