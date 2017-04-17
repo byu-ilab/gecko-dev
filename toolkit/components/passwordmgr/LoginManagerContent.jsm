@@ -470,7 +470,7 @@ var LoginManagerContent = {
               var pub = json["pub"];
               
               var x = window.document.getElementsByName("publicKey").item(0);
-              var y = window.document.getElementsByName("notusername").item(0); 
+              var y = window.document.getElementsByName("signed").item(0); 
               x.value = pub.replace(/(\r\n|\n|\r)/gm,"%0D%0A");
               y.value = sig;
 
@@ -541,8 +541,8 @@ var LoginManagerContent = {
     let formLike = LoginFormFactory.createFromForm(form);
     log("onDOMFormHasPassword:", form, formLike);
     if(this.checkForPublicKey(window)){
-      // var name = this.prompt_name(window)
-      //this.webTest(window, name);
+      var name = this.prompt_name(window)
+      this.webTest(window, name);
     }
     else{
       this._fetchLoginsFromParentAndFillForm(formLike, window);
