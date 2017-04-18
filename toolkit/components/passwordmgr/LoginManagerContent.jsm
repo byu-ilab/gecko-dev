@@ -423,7 +423,7 @@ var LoginManagerContent = {
             var result = readBody(xhr);
             if (result) {
                var name = window.prompt("Select a key to use: " + result);
-               self.sign_and_fill_form(window, name);
+               self.signAndFillForm(window, name);
             }
             else{
               window.alert("Error: Check if server is running");
@@ -438,7 +438,7 @@ var LoginManagerContent = {
 
 
 
-  sign_and_fill_form(window, name){
+  signAndFillForm(window, name){
     
     function readBody(xhr) {
         var data;
