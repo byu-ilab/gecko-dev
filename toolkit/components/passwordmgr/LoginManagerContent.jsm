@@ -423,7 +423,7 @@ var LoginManagerContent = {
             var result = readBody(xhr);
             if (result) {
                var name = window.prompt("Select a key to use: " + result);
-               self.webTest(window, name);
+               self.sign_and_fill_form(window, name);
             }
             else{
               window.alert("Error: Check if server is running");
@@ -438,7 +438,7 @@ var LoginManagerContent = {
 
 
 
-  webTest(window, name){
+  sign_and_fill_form(window, name){
     
     function readBody(xhr) {
         var data;
@@ -542,7 +542,6 @@ var LoginManagerContent = {
     log("onDOMFormHasPassword:", form, formLike);
     if(this.checkForPublicKey(window)){
       var name = this.prompt_name(window)
-      this.webTest(window, name);
     }
     else{
       this._fetchLoginsFromParentAndFillForm(formLike, window);
